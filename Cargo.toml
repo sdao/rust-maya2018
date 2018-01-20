@@ -1,0 +1,13 @@
+[package]
+name = "maya2018"
+version = "0.1.0"
+authors = ["Steven Dao <stevedao@gmail.com>"]
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.32.1"
+cc = "1.0.4"
+
+[patch.crates-io]
+bindgen = { path = "third_party/rust-bindgen" }
