@@ -40,6 +40,8 @@ fn main() {
         .whitelist_type(".*MObject")
         .whitelist_type(".*MSelectionList")
         .whitelist_type(".*MSyntax")
+        .constified_enum_module(".*MFn_Type")
+        .constified_enum_module(".*MStatus_MStatusCode")
         // Finish the builder and generate the bindings.
         .generate()
         // Unwrap the Result and panic on failure.

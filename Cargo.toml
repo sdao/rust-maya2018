@@ -6,8 +6,5 @@ authors = ["Steven Dao <stevedao@gmail.com>"]
 [dependencies]
 
 [build-dependencies]
-bindgen = "0.32.1"
+bindgen = { path = "third_party/rust-bindgen", version = "0.32.1" }
 cc = "1.0.4"
-
-[patch.crates-io]
-bindgen = { path = "third_party/rust-bindgen" }

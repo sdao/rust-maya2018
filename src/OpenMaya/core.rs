@@ -3,8 +3,12 @@
 use native;
 use std::ffi::CStr;
 
-pub type MFnType = native::MFn_Type;
-pub type MStatusCode = native::MStatus_MStatusCode;
+pub mod MFn {
+    pub use native::MFn_Type::*;
+}
+pub mod MStatusCode {
+    pub use native::MStatus_MStatusCode::*;
+}
 
 pub struct MObject {
     _native: native::MObject
@@ -16,13 +20,13 @@ impl MObject {
     pub fn new() -> Self {
         Self { _native: unsafe { native::MObject::new() } }
     }
-    pub fn hasFn(&self, fs: MFnType) -> bool {
+    pub fn hasFn(&self, fs: MFn::Type) -> bool {
         unsafe { self._native.hasFn(fs) }
     }
     pub fn isNull(&self) -> bool {
         unsafe { self._native.isNull() }
     }
-    pub fn apiType(&self) -> MFnType {
+    pub fn apiType(&self) -> MFn::Type {
         unsafe { self._native.apiType() }
     }
     pub fn apiTypeStr(&self) -> &str {
@@ -58,7 +62,7 @@ impl MStatus {
     pub fn new() -> Self {
         Self { _native: unsafe { native::MStatus::new() } }
     }
-    pub fn new_code(code: MStatusCode) -> Self {
+    pub fn new_code(code: MStatusCode::Type) -> Self {
         Self { _native: unsafe { native::MStatus::new1(code) } }
     }
     pub fn error(&self) -> bool {
@@ -67,7 +71,7 @@ impl MStatus {
     pub fn clear(&mut self) {
         unsafe { self._native.clear() }
     }
-    pub fn statusCode(&self) -> MStatusCode {
+    pub fn statusCode(&self) -> MStatusCode::Type {
         unsafe { self._native.statusCode() }
     }
     pub fn errorString(&self) -> String {
@@ -76,6 +80,9 @@ impl MStatus {
     pub fn perror1(&self, s: &str) {
         let mstring = native::str_to_mstring(s);
         unsafe { self._native.perror1(&mstring) }
+    }
+    pub fn as_native(&self) -> native::MStatus {
+        self.clone()._native
     }
 }
 impl PartialEq for MStatus {
@@ -87,10 +94,6 @@ impl Clone for MStatus {
     fn clone(&self) -> Self {
         Self { _native: unsafe { native::MStatus::new2(&self._native) } }
     }
-}
-#[macro_export]
-macro_rules! MS {
-    ($status:ident) => { MStatus::new_code(MStatusCode::$status) };
 }
 macro_rules! check_mstatus {
     ($ret:expr, $status:expr) => {{
@@ -112,14 +115,14 @@ impl MDagPath {
         Self { _native: unsafe { native::MDagPath::new() }}
     }
     // XXX getAllPathsBelow
-    pub fn hasFn(&self, apiType: MFnType) -> Result<bool, MStatus> {
+    pub fn hasFn(&self, apiType: MFn::Type) -> Result<bool, MStatus> {
         let mut status = MStatus::new();
         unsafe {
             let hasFn = self._native.hasFn(apiType, &mut status._native);
             check_mstatus!(hasFn, status)
         }
     }
-    pub fn apiType(&self) -> Result<MFnType, MStatus> {
+    pub fn apiType(&self) -> Result<MFn::Type, MStatus> {
         let mut status = MStatus::new();
         unsafe {
             let apiType = self._native.apiType(&mut status._native);
