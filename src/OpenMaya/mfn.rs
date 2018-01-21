@@ -25,18 +25,17 @@ impl MFnPlugin {
     pub fn registerCommand<T>(&mut self, name: &str) -> Result<(), MStatus>
         where T: MPxCommand + Sized
     {
-        let name_mstring = &native::MString::from(name);
-        let creator: Option<unsafe extern fn() -> *mut std::os::raw::c_void> = Some(T::shim_creator);
-        let syntax_creator: Option<unsafe extern fn() -> native::MSyntax> = Some(T::shim_syntax_creator);
-        let native_status = unsafe { thiscall!(native::MFnPlugin_registerCommand,
-                &mut self._native, name_mstring, creator, syntax_creator) };
+        let creator: Option<unsafe extern fn() -> *mut std::os::raw::c_void> =
+                Some(T::shim_creator);
+        let syntax_creator: Option<unsafe extern fn() -> native::MSyntax> =
+                Some(T::shim_syntax_creator);
+        let native_status = unsafe { self._native.registerCommand(
+                &native::MString::from(name), creator, syntax_creator) };
         let status = MStatus::wrap(native_status);
         check_mstatus!((), status)
     }
     pub fn deregisterCommand(&mut self, name: &str) -> Result<(), MStatus> {
-        let name_mstring = &native::MString::from(name);
-        let native_status = unsafe { thiscall!(native::MFnPlugin_deregisterCommand,
-                &mut self._native, name_mstring) };
+        let native_status = unsafe { self._native.deregisterCommand(&native::MString::from(name)) };
         let status = MStatus::wrap(native_status);
         check_mstatus!((), status)
     }

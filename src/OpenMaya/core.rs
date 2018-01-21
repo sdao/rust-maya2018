@@ -145,20 +145,14 @@ impl MDagPath {
     pub fn node(&self) -> Result<MObject, MStatus> {
         let mut status = MStatus::new();
         unsafe {
-            let obj = {
-                let status_ptr = &mut status._native;
-                thiscall!(native::MDagPath_node, &self._native, status_ptr)
-            };
+            let obj = self._native.node(&mut status._native);
             check_mstatus!(MObject::wrap(obj), status)
         }
     }
     pub fn transform(&self) -> Result<MObject, MStatus> {
         let mut status = MStatus::new();
         unsafe {
-            let obj = {
-                let status_ptr = &mut status._native;
-                thiscall!(native::MDagPath_transform, &self._native, status_ptr)
-            };
+            let obj = self._native.transform(&mut status._native);
             check_mstatus!(MObject::wrap(obj), status)
         }
     }
@@ -171,17 +165,14 @@ impl MDagPath {
     }
     pub fn extendToShape(&mut self) -> Result<(), MStatus> {
         unsafe {
-            let native_status = thiscall!(native::MDagPath_extendToShape,
-                    &mut self._native,);
+            let native_status = self._native.extendToShape();
             let status = MStatus::wrap(native_status);
             check_mstatus!((), status)
         }
     }
     pub fn extendToShapeDirectlyBelow(&mut self, i: u32) -> Result<(), MStatus> {
         unsafe {
-            let native_status = thiscall!(native::MDagPath_extendToShapeDirectlyBelow,
-                    &mut self._native,
-                    i);
+            let native_status = self._native.extendToShapeDirectlyBelow(i);
             let status = MStatus::wrap(native_status);
             check_mstatus!((), status)
         }
@@ -189,31 +180,21 @@ impl MDagPath {
     pub fn numberOfShapesDirectlyBelow(&self) -> Result<u32, MStatus> {
         let mut num = 0u32;
         unsafe {
-            let native_status = {
-                let num_ptr = &mut num;
-                thiscall!(native::MDagPath_numberOfShapesDirectlyBelow,
-                        &self._native,
-                        num_ptr)
-            };
+            let native_status = self._native.numberOfShapesDirectlyBelow(&mut num);
             let status = MStatus::wrap(native_status);
             check_mstatus!(num, status)
         }
     }
     pub fn push(&mut self, obj: &MObject) -> Result<(), MStatus> {
         unsafe {
-            let obj_ptr = &obj._native;
-            let native_status = thiscall!(native::MDagPath_push,
-                    &mut self._native,
-                    obj_ptr);
+            let native_status = self._native.push(&obj._native);
             let status = MStatus::wrap(native_status);
             check_mstatus!((), status)
         }
     }
     pub fn pop(&mut self, num: u32) -> Result<(), MStatus> {
         unsafe {
-            let native_status = thiscall!(native::MDagPath_pop,
-                    &mut self._native,
-                    num);
+            let native_status = self._native.pop(num);
             let status = MStatus::wrap(native_status);
             check_mstatus!((), status)
         }
@@ -228,13 +209,7 @@ impl MDagPath {
     pub fn child(&self, i: u32) -> Result<MObject, MStatus> {
         let mut status = MStatus::new();
         unsafe {
-            let native_obj = {
-                let status_ptr = &mut status._native;
-                thiscall!(native::MDagPath_child,
-                        &self._native,
-                        i,
-                        status_ptr)
-            };
+            let native_obj = self._native.child(i, &mut status._native);
             check_mstatus!(MObject::wrap(native_obj), status)
         }
     }
@@ -244,10 +219,7 @@ impl MDagPath {
     // XXX exclusiveMatrixInverse
     pub fn set(&mut self, src: &MDagPath) -> Result<(), MStatus> {
         unsafe {
-            let src_ptr = &src._native;
-            let native_status = thiscall!(native::MDagPath_set,
-                    &mut self._native,
-                    src_ptr);
+            let native_status = self._native.set(&src._native);
             let status = MStatus::wrap(native_status);
             check_mstatus!((), status)
         }
@@ -262,13 +234,7 @@ impl MDagPath {
     pub fn getPath(&self, i: u32) -> Result<MDagPath, MStatus> {
         let mut path = MDagPath::new();
         unsafe {
-            let native_status = {
-                let path_ptr = &mut path._native;
-                thiscall!(native::MDagPath_getPath,
-                        &self._native,
-                        path_ptr,
-                        i)
-            };
+            let native_status = self._native.getPath(&mut path._native, i);
             let status = MStatus::wrap(native_status);
             check_mstatus!(path, status)
         }
@@ -276,12 +242,7 @@ impl MDagPath {
     pub fn fullPathName(&self) -> Result<String, MStatus> {
         let mut status = MStatus::new();
         unsafe {
-            let mstring = {
-                let status_ptr = &mut status._native;
-                thiscall!(native::MDagPath_fullPathName,
-                        &self._native,
-                        status_ptr)
-            };
+            let mstring = self._native.fullPathName(&mut status._native);
             let name = String::from(&mstring);
             check_mstatus!(name, status)
         }
@@ -289,12 +250,7 @@ impl MDagPath {
     pub fn partialPathName(&self) -> Result<String, MStatus> {
         let mut status = MStatus::new();
         unsafe {
-            let mstring = {
-                let status_ptr = &mut status._native;
-                thiscall!(native::MDagPath_partialPathName,
-                        &self._native,
-                        status_ptr)
-            };
+            let mstring = self._native.partialPathName(&mut status._native);
             let name = String::from(&mstring);
             check_mstatus!(name, status)
         }
