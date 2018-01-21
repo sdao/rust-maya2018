@@ -2,6 +2,7 @@
 
 use native;
 use std::ffi::CStr;
+use std::fmt::{Debug, Error, Formatter};
 
 pub mod MFn {
     pub use native::MFn_Type::*;
@@ -11,7 +12,7 @@ pub mod MStatusCode {
 }
 
 pub struct MObject {
-    _native: native::MObject
+    pub _native: native::MObject
 }
 impl MObject {
     pub fn wrap(n: native::MObject) -> Self {
@@ -53,7 +54,7 @@ impl Drop for MObject {
 }
 
 pub struct MStatus {
-    _native: native::MStatus
+    pub _native: native::MStatus
 }
 impl MStatus {
     pub fn wrap(n: native::MStatus) -> Self {
@@ -75,13 +76,13 @@ impl MStatus {
         unsafe { self._native.statusCode() }
     }
     pub fn errorString(&self) -> String {
-        unsafe { native::mstring_to_string(&self._native.errorString()) }
+        unsafe { String::from(&self._native.errorString()) }
     }
     pub fn perror1(&self, s: &str) {
-        let mstring = native::str_to_mstring(s);
+        let mstring = native::MString::from(s);
         unsafe { self._native.perror1(&mstring) }
     }
-    pub fn as_native(&self) -> native::MStatus {
+    pub fn clone_native(&self) -> native::MStatus {
         self.clone()._native
     }
 }
@@ -95,7 +96,12 @@ impl Clone for MStatus {
         Self { _native: unsafe { native::MStatus::new2(&self._native) } }
     }
 }
-macro_rules! check_mstatus {
+impl Debug for MStatus {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+        write!(f, "MStatus({})", self.errorString())
+    }
+}
+#[macro_export] macro_rules! check_mstatus {
     ($ret:expr, $status:expr) => {{
         match $status.error() {
             true => Err($status),
@@ -105,7 +111,7 @@ macro_rules! check_mstatus {
 }
 
 pub struct MDagPath {
-    _native: native::MDagPath
+    pub _native: native::MDagPath
 }
 impl MDagPath {
     pub fn wrap(n: native::MDagPath) -> Self {
@@ -276,7 +282,7 @@ impl MDagPath {
                         &self._native,
                         status_ptr)
             };
-            let name = native::mstring_to_string(&mstring);
+            let name = String::from(&mstring);
             check_mstatus!(name, status)
         }
     }
@@ -289,7 +295,7 @@ impl MDagPath {
                         &self._native,
                         status_ptr)
             };
-            let name = native::mstring_to_string(&mstring);
+            let name = String::from(&mstring);
             check_mstatus!(name, status)
         }
     }
@@ -339,6 +345,37 @@ impl Drop for MDagPath {
     }
 }
 
-mod MGlobal {
+// XXX unimplemented
+pub struct MArgList {
+    pub _native: native::MArgList
+}
+impl MArgList {
+    pub fn wrap(n: native::MArgList) -> Self {
+        Self { _native : n}
+    }
+}
 
+// XXX unimplemented
+pub struct MSyntax {
+    pub _native: native::MSyntax
+}
+impl MSyntax {
+    pub fn wrap(n: native::MSyntax) -> Self {
+        Self { _native : n}
+    }
+    pub fn new() -> Self {
+        Self { _native: unsafe { native::MSyntax::new() } }
+    }
+}
+impl Clone for MSyntax {
+    fn clone(&self) -> Self {
+        Self { _native: unsafe { native::MSyntax::new1(&self._native) } }
+    }
+}
+
+pub mod MGlobal {
+    use native;
+    pub fn displayInfo(s: &str) {
+        unsafe { native::MGlobal::displayInfo(&native::MString::from(s)); }
+    }
 }

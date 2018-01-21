@@ -6,25 +6,6 @@ pub use self::root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::*;
 
 use std::ffi::{CStr, CString};
 
-/// Converts an MString into a String.
-pub fn mstring_to_string(mstring: &MString) -> String {
-    unsafe {
-        let s_ptr = mstring.asUTF8();
-        let s = CStr::from_ptr(s_ptr).to_str().expect("invalid MString from OpenMaya");
-        String::from(s)
-    }
-}
-
-/// Converts a &str into an MString (creates owned data).
-pub fn str_to_mstring(s: &str) -> MString {
-    let s_ptr = CString::new(s).unwrap().as_c_str().as_ptr();
-    unsafe {
-        let mut mstring = MString::new();
-        mstring.setUTF8(s_ptr);
-        mstring
-    }
-}
-
 /// Helper for thiscall macro.
 /// thiscall_helper!(T, U, V, ...) returns a converter function.
 /// This function takes a function
@@ -81,4 +62,20 @@ macro_rules! thiscall {
     ($member_func:path, $this:expr) => {
         thiscall!($member_func, $this,)
     };
+}
+
+impl<'a> From<&'a MString> for String {
+    fn from(mstring: &MString) -> String {
+        unsafe {
+            let s_ptr = mstring.asUTF8();
+            let s = CStr::from_ptr(s_ptr).to_str().expect("invalid MString from OpenMaya");
+            String::from(s)
+        }
+    }
+}
+impl<'a> From<&'a str> for MString {
+    fn from(string: &str) -> MString {
+        let cstring = CString::new(string).unwrap();
+        unsafe { MString::new1(cstring.as_ptr()) }
+    }
 }

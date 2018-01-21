@@ -1,4 +1,5 @@
 extern crate bindgen;
+extern crate cc;
 
 use std::env;
 use std::path::PathBuf;
@@ -15,6 +16,14 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=Foundation");
     println!("cargo:rustc-link-search=native={}", maya.join("lib").to_str().unwrap());
 
+    // Add shims for implementing virtual classes.
+    cc::Build::new()
+        .cpp(true)
+        .file("shim/shim.cpp")
+        .include("shim")
+        .include(maya.join("include").to_str().unwrap())
+        .compile("shim");
+
     // The bindgen::Builder is the main entry point
     // to bindgen, and lets you build up options for
     // the resulting bindings.
@@ -23,15 +32,18 @@ fn main() {
         // bindings for.
         .header("wrapper.h")
         .clang_arg(format!("-isystem{}", maya.join("include").to_str().unwrap()))
-        .clang_arg("-Ihelper")
+        .clang_arg("-Ishim")
         .clang_arg("-x")
         .clang_arg("c++")
         .clang_arg("-std=c++14")
         .enable_cxx_namespaces()
+        .derive_copy(false)
         .rustfmt_bindings(true)
         .link("OpenMaya")
         .link("Foundation")
         .opaque_type("std.*") // We don't need C++ stdlib access.
+        .whitelist_type("Shim.*")
+        .whitelist_type(".*MArgList")
         .whitelist_type(".*MDagPath")
         .whitelist_type(".*MFnBase")
         .whitelist_type(".*MFnDagNode")
