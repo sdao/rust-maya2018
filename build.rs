@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::io::prelude::*;
 use std::fs::File;
 
-use syn::{ItemImpl, ItemMod, ImplItemMethod, Type};
+use syn::{ItemImpl, ItemMod, ImplItemMethod, ItemType, Type};
 use regex::Regex;
 
 enum MayaVisitMethodType {
@@ -61,7 +61,7 @@ impl MayaVisit {
             MayaVisitMethodType::Normal
         }
     }
-    /// Does the fn_arg represent a *const ident for the given ident?
+    /// Does the fn_arg represent a *const ns1::ns2::ident for the given ident?
     fn is_fn_arg_const_ptr(fn_arg: &syn::FnArg, ident: &syn::Ident) -> bool {
         match fn_arg {
             &syn::FnArg::Captured(ref fn_arg) => {
@@ -80,6 +80,44 @@ impl MayaVisit {
                 }
             },
             _ => false
+        }
+    }
+    /// Convert type from bindgen to high-level API.
+    /// Returns: Option((tokens, is_ptr)) where tokens is the new type token and is_ptr is
+    /// whether the type is a *const tokens or *mut tokens instead of just tokens.
+    fn quote_ty(ty: &syn::Type) -> Option<(quote::Tokens, bool)> {
+        match ty {
+            &syn::Type::Path(ref ty) => {
+                let name = ty.path.segments.last().unwrap().value().ident;
+                match name.to_string().as_str() {
+                    "c_char" => None,
+                    "c_double" => Some((quote! { f64 }, false)),
+                    "c_float" => Some((quote! { f32 }, false)),
+                    "c_int" => Some((quote! { i32 }, false)),
+                    "c_long" => None,
+                    "c_longlong" => None,
+                    "c_schar" => None,
+                    "c_short" => None,
+                    "c_uchar" => None,
+                    "c_uint" => None,
+                    "c_ulong" => None,
+                    "c_ulonglong" => None,
+                    "c_ushort" => None,
+                    "Type" => {
+                        let real_name = &ty.path.segments[ty.path.segments.len() - 2].ident;
+                        Some((quote! { #real_name :: Type }, false))
+                    }
+                    _ => Some((quote! { #name }, false))
+                }
+            },
+            &syn::Type::Ptr(ref ty) => {
+                let inner_ty = MayaVisit::quote_ty(&ty.elem);
+                match inner_ty {
+                    Some((tokens, _)) => Some((tokens, true)),
+                    _ => None
+                }
+            },
+            _ => None
         }
     }
 }
@@ -164,9 +202,30 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisit {
             },
             MayaVisitMethodType::Operator => {
                 let impl_type = self.impl_type;
-                match i.sig.ident.to_string() {
-                    _ => self.impl_traits.push(quote! {})
-                };
+
+                let fn_ident = &i.sig.ident;
+                let fn_inputs = &i.sig.decl.inputs;
+                if fn_ident.to_string().starts_with("operator_eq") {
+                    if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
+                        if let Some((rhs_type, rhs_is_ptr)) = MayaVisit::quote_ty(&fn_arg.ty) {
+                            let rhs_access = if rhs_is_ptr {
+                                quote! { &other._native }
+                            }
+                            else {
+                                quote! { *other }
+                            };
+                            self.impl_traits.push(quote! {
+                                impl PartialEq<#rhs_type> for #impl_type {
+                                    fn eq(&self, other: &#rhs_type) -> bool {
+                                        unsafe {
+                                            self._native.#fn_ident(#rhs_access)
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                    }
+                }
             },
             MayaVisitMethodType::Normal => {
                 let name = i.sig.ident;
@@ -175,6 +234,25 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisit {
                 })
             }
         }
+    }
+    fn visit_item_type(&mut self, i: &'ast ItemType) {
+        let ident = &i.ident;
+        let ns = &self.cur_namespace;
+        if ident.to_string() == "Type" {
+            // Enum setup as module by bindgen.
+            let name = ns.last().unwrap();
+            self.tokens.push(quote! {
+                pub mod #name {
+                    pub use super :: #( #ns :: )* *;
+                }
+            });
+        }
+        else {
+            // Regular type alias/enum.
+            self.tokens.push(quote! {
+                pub type #ident = #( #ns :: )* #ident;
+            });
+        };
     }
 }
 
