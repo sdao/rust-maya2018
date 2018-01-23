@@ -101,6 +101,11 @@ impl Debug for MStatus {
         write!(f, "MStatus({})", self.errorString())
     }
 }
+#[macro_export] macro_rules! MS {
+    ($code:ident) => {
+        ::maya2018::OpenMaya::MStatus::new_code(::maya2018::OpenMaya::MStatusCode::$code)
+    };
+}
 #[macro_export] macro_rules! check_mstatus {
     ($ret:expr, $status:expr) => {{
         match $status.error() {
