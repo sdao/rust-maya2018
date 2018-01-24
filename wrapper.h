@@ -9,4 +9,5 @@
 #include <maya/MPxCommand.h>
 #include <maya/MSelectionList.h>
 #include <maya/MSyntax.h>
+#include <maya/MVector.h>
 #include "shim.h"

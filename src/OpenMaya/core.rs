@@ -5,10 +5,12 @@ use std::ffi::CStr;
 use std::fmt::{Debug, Error, Formatter};
 
 pub mod MFn {
-    pub use native::MFn_Type::*;
+    use native;
+    pub type Type = native::MFn_Type;
 }
 pub mod MStatusCode {
-    pub use native::MStatus_MStatusCode::*;
+    use native;
+    pub type Type = native::MStatus_MStatusCode;
 }
 
 pub struct MObject {
