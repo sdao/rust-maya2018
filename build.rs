@@ -104,19 +104,19 @@ impl MayaVisitSecondPass {
             &syn::Type::Path(ref ty) => {
                 let name = ty.path.segments.last().unwrap().value().ident;
                 match name.to_string().as_str() {
-                    "c_char" => None,
+                    "c_char" => Some((syn::Ident::from("i8"), MayaVisitPtrType::NotPtr)),
                     "c_double" => Some((syn::Ident::from("f64"), MayaVisitPtrType::NotPtr)),
                     "c_float" => Some((syn::Ident::from("f32"), MayaVisitPtrType::NotPtr)),
                     "c_int" => Some((syn::Ident::from("i32"), MayaVisitPtrType::NotPtr)),
-                    "c_long" => None,
-                    "c_longlong" => None,
-                    "c_schar" => None,
-                    "c_short" => None,
-                    "c_uchar" => None,
-                    "c_uint" => None,
-                    "c_ulong" => None,
-                    "c_ulonglong" => None,
-                    "c_ushort" => None,
+                    "c_long" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
+                    "c_longlong" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
+                    "c_schar" => Some((syn::Ident::from("i8"), MayaVisitPtrType::NotPtr)),
+                    "c_short" => Some((syn::Ident::from("i16"), MayaVisitPtrType::NotPtr)),
+                    "c_uchar" => Some((syn::Ident::from("u8"), MayaVisitPtrType::NotPtr)),
+                    "c_uint" => Some((syn::Ident::from("u32"), MayaVisitPtrType::NotPtr)),
+                    "c_ulong" => Some((syn::Ident::from("u64"), MayaVisitPtrType::NotPtr)),
+                    "c_ulonglong" => Some((syn::Ident::from("u64"), MayaVisitPtrType::NotPtr)),
+                    "c_ushort" => Some((syn::Ident::from("u16"), MayaVisitPtrType::NotPtr)),
                     _ => Some((name, MayaVisitPtrType::NotPtr))
                 }
             },
