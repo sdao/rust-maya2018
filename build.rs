@@ -32,7 +32,15 @@ struct MayaVisitFirstPass {
 }
 impl<'ast> syn::visit::Visit<'ast> for MayaVisitFirstPass {
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
-        self.structs.insert(i.ident);
+        // Skip MStrings because we'll wrap those in the API as str/String and not expose.
+        // Skip MPx classes because we need to implement manual shims for those.
+        let ident_name = i.ident.to_string();
+        if ident_name.starts_with("M") &&
+                !ident_name.starts_with("MString") &&
+                !ident_name.starts_with("MPx")
+        {
+            self.structs.insert(i.ident);
+        }
     }
 }
 struct MayaVisitSecondPass {
@@ -55,14 +63,6 @@ impl MayaVisitSecondPass {
             impl_traits: vec![],
             impl_partialeq: HashMap::new()
         }
-    }
-    fn process_type(ident: &syn::Ident) -> bool {
-        // Skip MStrings because we'll wrap those in the API as str/String and not expose.
-        // Skip MPx classes because we need to implement manual shims for those.
-        let ident_name = ident.to_string();
-        ident_name.starts_with("M") &&
-                ident_name != "MString" &&
-                !ident_name.starts_with("MPx")
     }
     fn process_method(ident: &syn::Ident) -> MayaVisitMethodType {
         let constructor_regex = Regex::new("^new[0-9]*$").unwrap();
@@ -257,16 +257,18 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
     }
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
         let struct_type = &i.ident;
-        let ns = &self.cur_namespace;
-        self.tokens.push(quote! {
-            pub struct #struct_type {
-                _native: #( #ns :: )* #struct_type,
-            }
-        });
+        if self.first_pass.structs.contains(struct_type) {
+            let ns = &self.cur_namespace;
+            self.tokens.push(quote! {
+                pub struct #struct_type {
+                    _native: #( #ns :: )* #struct_type,
+                }
+            });
+        }
     }
     fn visit_item_impl(&mut self, i: &'ast ItemImpl) {
         match *i.self_ty {
-            Type::Path(ref p) if MayaVisitSecondPass::process_type(
+            Type::Path(ref p) if self.first_pass.structs.contains(
                     &p.path.segments.last().unwrap().value().ident) =>
             {
                 let impl_type = p.path.segments.last().unwrap().value().ident;
