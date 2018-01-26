@@ -1,3 +1,5 @@
+#![recursion_limit="128"]
+
 extern crate bindgen;
 extern crate cc;
 extern crate syn;
@@ -19,6 +21,11 @@ enum MayaVisitMethodType {
     Destructor,
     Operator,
     Normal
+}
+enum MayaVisitPtrType {
+    NotPtr,
+    ConstPtr,
+    MutPtr
 }
 struct MayaVisitFirstPass {
     pub structs: HashSet<syn::Ident>,
@@ -79,7 +86,10 @@ impl MayaVisitSecondPass {
         match fn_arg {
             &syn::FnArg::Captured(ref fn_arg) => {
                 match MayaVisitSecondPass::quote_ty(&fn_arg.ty) {
-                    Some((ty_ident, is_ptr)) => is_ptr && ident == &ty_ident,
+                    Some((ty_ident, is_ptr)) => ident == &ty_ident && match is_ptr {
+                        MayaVisitPtrType::NotPtr => false,
+                        _ => true
+                    },
                     None => false
                 }
             },
@@ -89,15 +99,15 @@ impl MayaVisitSecondPass {
     /// Convert type from bindgen to high-level API.
     /// Returns: Option((ident, is_ptr)) where ident is the new type token; is_ptr is
     /// whether the type is a *const/mut ident.
-    fn quote_ty(ty: &syn::Type) -> Option<(syn::Ident, bool)> {
+    fn quote_ty(ty: &syn::Type) -> Option<(syn::Ident, MayaVisitPtrType)> {
         match ty {
             &syn::Type::Path(ref ty) => {
                 let name = ty.path.segments.last().unwrap().value().ident;
                 match name.to_string().as_str() {
                     "c_char" => None,
-                    "c_double" => Some((syn::Ident::from("f64"), false)),
-                    "c_float" => Some((syn::Ident::from("f32"), false)),
-                    "c_int" => Some((syn::Ident::from("i32"), false)),
+                    "c_double" => Some((syn::Ident::from("f64"), MayaVisitPtrType::NotPtr)),
+                    "c_float" => Some((syn::Ident::from("f32"), MayaVisitPtrType::NotPtr)),
+                    "c_int" => Some((syn::Ident::from("i32"), MayaVisitPtrType::NotPtr)),
                     "c_long" => None,
                     "c_longlong" => None,
                     "c_schar" => None,
@@ -107,18 +117,136 @@ impl MayaVisitSecondPass {
                     "c_ulong" => None,
                     "c_ulonglong" => None,
                     "c_ushort" => None,
-                    _ => Some((name, false))
+                    _ => Some((name, MayaVisitPtrType::NotPtr))
                 }
             },
             &syn::Type::Ptr(ref ty) => {
                 let inner_ty = MayaVisitSecondPass::quote_ty(&ty.elem);
                 match inner_ty {
-                    Some((tokens, _)) => Some((tokens, true)),
+                    Some((tokens, _)) => {
+                        let is_const = ty.const_token.is_some();
+                        let ptr_kind = if is_const {
+                            MayaVisitPtrType::ConstPtr
+                        }
+                        else {
+                            MayaVisitPtrType::MutPtr
+                        };
+                        Some((tokens, ptr_kind))
+                    },
                     _ => None
                 }
             },
             _ => None
         }
+    }
+    fn quote_binary_operator(&self, i: &ImplItemMethod, trait_name: &syn::Ident,
+        fn_name: &syn::Ident) -> quote::Tokens
+    {
+        let impl_type = self.impl_type;
+        let fn_ident = &i.sig.ident;
+        let fn_inputs = &i.sig.decl.inputs;
+        if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
+            if let Some((rhs_ident, rhs_is_ptr)) =
+                MayaVisitSecondPass::quote_ty(&fn_arg.ty)
+            {
+                if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
+                    if let Some((ret_ident, _)) =
+                        MayaVisitSecondPass::quote_ty(&ret_ty)
+                    {
+                        let invoke_byval = match rhs_is_ptr {
+                            MayaVisitPtrType::NotPtr => quote! {
+                                unsafe { self_._native.#fn_ident(other) }
+                            },
+                            MayaVisitPtrType::ConstPtr => quote! {
+                                unsafe { self_._native.#fn_ident(&other._native) }
+                            },
+                            MayaVisitPtrType::MutPtr => quote! {
+                                unsafe { self_._native.#fn_ident(&mut other._native) }
+                            },
+                        };
+                        let ret_byval = if self.first_pass.structs.contains(&ret_ident) {
+                            quote! { #ret_ident { _native: #invoke_byval } }
+                        }
+                        else {
+                            quote! { #invoke_byval }
+                        };
+                        let invoke_byref = match rhs_is_ptr {
+                            MayaVisitPtrType::NotPtr => quote! {
+                                unsafe { self_._native.#fn_ident(*other) }
+                            },
+                            MayaVisitPtrType::ConstPtr => quote! {
+                                unsafe { self_._native.#fn_ident(&other._native) }
+                            },
+                            MayaVisitPtrType::MutPtr => quote! {
+                                unsafe { self_._native.#fn_ident(&mut other._native) }
+                            },
+                        };
+                        let ret_byref = if self.first_pass.structs.contains(&ret_ident) {
+                            quote! { #ret_ident { _native: #invoke_byref } }
+                        }
+                        else {
+                            quote! { #invoke_byref }
+                        };
+                        // Because the Maya API is weird enough as-is...
+                        // If the lhs or rhs of the argument is non-const, clone it before using.
+                        let self_mut_fix = match *fn_inputs.first().unwrap().value() {
+                            &syn::FnArg::SelfRef(ref self_arg) if self_arg.mutability.is_some() => {
+                                quote! { let mut self_  = self.clone(); }
+                            },
+                            _ => quote! {
+                                let self_ = self;
+                            }
+                        };
+                        let other_mut_fix = match rhs_is_ptr {
+                            MayaVisitPtrType::MutPtr => quote! {
+                                let mut other = other.clone();
+                            },
+                            _ => quote! {}
+                        };
+                        // Since we're just auto-generating everything, generate all op traits
+                        // for ref/non-ref combos.
+                        return quote! {
+                            impl ::std::ops::#trait_name<#rhs_ident> for #impl_type {
+                                type Output = #ret_ident;
+                                fn #fn_name(self, other: #rhs_ident) -> #ret_ident {
+                                    #self_mut_fix
+                                    #other_mut_fix
+                                    #ret_byval
+                                }
+                            }
+                            impl<'a> ::std::ops::#trait_name<#rhs_ident> for &'a #impl_type {
+                                type Output = #ret_ident;
+                                fn #fn_name(self, other: #rhs_ident) -> #ret_ident {
+                                    #self_mut_fix
+                                    #other_mut_fix
+                                    #ret_byval
+                                }
+                            }
+                            impl<'b> ::std::ops::#trait_name<&'b #rhs_ident> for #impl_type {
+                                type Output = #ret_ident;
+                                fn #fn_name(self, other: &'b #rhs_ident) -> #ret_ident {
+                                    #self_mut_fix
+                                    #other_mut_fix
+                                    #ret_byref
+                                }
+                            }
+                            impl<'a, 'b> ::std::ops::#trait_name<&'b #rhs_ident>
+                                for &'a #impl_type
+                            {
+                                type Output = #ret_ident;
+                                fn #fn_name(self, other: &'b #rhs_ident) -> #ret_ident {
+                                    #self_mut_fix
+                                    #other_mut_fix
+                                    #ret_byref
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+        }
+
+        return quote! {};
     }
 }
 impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
@@ -126,6 +254,15 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
         self.cur_namespace.push(i.ident);
         syn::visit::visit_item_mod(self, i);
         self.cur_namespace.pop();
+    }
+    fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
+        let struct_type = &i.ident;
+        let ns = &self.cur_namespace;
+        self.tokens.push(quote! {
+            pub struct #struct_type {
+                _native: #( #ns :: )* #struct_type,
+            }
+        });
     }
     fn visit_item_impl(&mut self, i: &'ast ItemImpl) {
         match *i.self_ty {
@@ -138,8 +275,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 self.impl_traits.clear();
                 self.impl_partialeq.clear();
                 syn::visit::visit_item_impl(self, i);
-            
-                let ns = &self.cur_namespace;
+
                 let impl_fns = &self.impl_fns;
                 let impl_traits = &self.impl_traits;
                 let impl_partialeq = if self.impl_partialeq.is_empty() {
@@ -157,9 +293,6 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                     partialeqs
                 };
                 self.tokens.push(quote! {
-                    pub struct #impl_type {
-                        _native: #( #ns :: )* #impl_type,
-                    }
                     impl #impl_type {
                         #( #impl_fns )*
                     }
@@ -218,19 +351,18 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
             },
             MayaVisitMethodType::Operator => {
                 let impl_type = self.impl_type;
-
                 let fn_ident = &i.sig.ident;
                 let fn_inputs = &i.sig.decl.inputs;
+
+                // == and != are special because they belong to PartialEq.
                 if fn_ident.to_string().starts_with("operator_eq") {
                     if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
                         if let Some((rhs_ident, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
-                            let rhs_access = if rhs_is_ptr {
-                                quote! { &other._native }
-                            }
-                            else {
-                                quote! { *other }
+                            let rhs_access = match rhs_is_ptr {
+                                MayaVisitPtrType::NotPtr => quote! { *other },
+                                _ => quote! { &other._native }
                             };
                             let v = self.impl_partialeq.entry(rhs_ident).or_insert(vec![]);
                             v.push(quote! {
@@ -248,11 +380,9 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         if let Some((rhs_ident, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
-                            let rhs_access = if rhs_is_ptr {
-                                quote! { &other._native }
-                            }
-                            else {
-                                quote! { *other }
+                            let rhs_access = match rhs_is_ptr {
+                                MayaVisitPtrType::NotPtr => quote! { *other },
+                                _ => quote! { &other._native }
                             };
                             let v = self.impl_partialeq.entry(rhs_ident).or_insert(vec![]);
                             v.push(quote! {
@@ -265,6 +395,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         }
                     }
                 }
+                // ! is a special unary operator.
                 else if fn_ident.to_string().starts_with("operator_not") {
                     self.impl_traits.push(quote! {
                         impl ::std::ops::Not for #impl_type {
@@ -281,50 +412,40 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         }
                     })
                 }
+                // [] is a special sorta-binary operator.
+                else if fn_ident.to_string().starts_with("operator_index") {
+                    // XXX
+                }
+                // Remaining operators (binary).
                 else if fn_ident.to_string().starts_with("operator_add") {
-                    if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
-                        if let Some((rhs_ident, rhs_is_ptr)) =
-                            MayaVisitSecondPass::quote_ty(&fn_arg.ty)
-                        {
-                            if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
-                                if let Some((ret_ident, _)) =
-                                    MayaVisitSecondPass::quote_ty(&ret_ty)
-                                {
-                                    let rhs_access = if rhs_is_ptr {
-                                        quote! { &other._native }
-                                    }
-                                    else {
-                                        quote! { *other }
-                                    };
-                                    let invoke = quote! {
-                                        unsafe { self._native.#fn_ident(#rhs_access) }
-                                    };
-                                    let ret_wrap = if self.first_pass.structs.contains(&ret_ident) {
-                                        quote! { #ret_ident { _native: #invoke } }
-                                    }
-                                    else {
-                                        quote! { #invoke }
-                                    };
-                                    self.impl_traits.push(quote! {
-                                        impl ::std::ops::Add<#rhs_ident> for #impl_type {
-                                            type Output = #ret_ident;
-                                            fn add(self, other: #rhs_ident) -> #ret_ident {
-                                                #ret_wrap
-                                            }
-                                        }
-                                        impl<'a, 'b> ::std::ops::Add<&'b #rhs_ident>
-                                            for &'a #impl_type
-                                        {
-                                            type Output = #ret_ident;
-                                            fn add(self, other: &'b #rhs_ident) -> #ret_ident {
-                                                #ret_wrap
-                                            }
-                                        }
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    let q = self.quote_binary_operator(
+                            i, &syn::Ident::from("Add"), &syn::Ident::from("add"));
+                    self.impl_traits.push(q);
+                }
+                else if fn_ident.to_string().starts_with("operator_sub") {
+                    let q = self.quote_binary_operator(
+                            i, &syn::Ident::from("Sub"), &syn::Ident::from("sub"));
+                    self.impl_traits.push(q);
+                }
+                else if fn_ident.to_string().starts_with("operator_mul") {
+                    let q = self.quote_binary_operator(
+                            i, &syn::Ident::from("Mul"), &syn::Ident::from("mul"));
+                    self.impl_traits.push(q);
+                }
+                else if fn_ident.to_string().starts_with("operator_div") {
+                    let q = self.quote_binary_operator(
+                            i, &syn::Ident::from("Div"), &syn::Ident::from("div"));
+                    self.impl_traits.push(q);
+                }
+                else if fn_ident.to_string().starts_with("operator_or") {
+                    let q = self.quote_binary_operator(
+                            i, &syn::Ident::from("BitOr"), &syn::Ident::from("bitor"));
+                    self.impl_traits.push(q);
+                }
+                else if fn_ident.to_string().starts_with("operator_xor") {
+                    let q = self.quote_binary_operator(
+                            i, &syn::Ident::from("BitXor"), &syn::Ident::from("bitxor"));
+                    self.impl_traits.push(q);
                 }
             },
             MayaVisitMethodType::Normal => {
