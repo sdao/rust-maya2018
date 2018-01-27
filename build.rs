@@ -182,7 +182,7 @@ impl MayaVisitSecondPass {
                             },
                         };
                         let ret_byref = if self.first_pass.structs.contains(&ret_ident) {
-                            quote! { #ret_ident { _native: #invoke_byref } }
+                            quote! { #ret_ident::wrap(#invoke_byref) }
                         }
                         else {
                             quote! { #invoke_byref }
@@ -248,6 +248,132 @@ impl MayaVisitSecondPass {
 
         return quote! {};
     }
+    fn quote_index_operator(&self, i: &ImplItemMethod) -> quote::Tokens
+    {
+        let impl_type = self.impl_type;
+        let fn_ident = &i.sig.ident;
+        let fn_inputs = &i.sig.decl.inputs;
+        if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
+            if let Some((rhs_ident, rhs_is_ptr)) =
+                MayaVisitSecondPass::quote_ty(&fn_arg.ty)
+            {
+                if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
+                    if let Some((ret_ident, ret_is_ptr)) =
+                        MayaVisitSecondPass::quote_ty(&ret_ty)
+                    {
+                        let invoke_byval = match rhs_is_ptr {
+                            MayaVisitPtrType::NotPtr => quote! {
+                                self_._native.#fn_ident(other)
+                            },
+                            MayaVisitPtrType::ConstPtr => quote! {
+                                self_._native.#fn_ident(&other._native)
+                            },
+                            MayaVisitPtrType::MutPtr => quote! {
+                                self_._native.#fn_ident(&mut other._native)
+                            },
+                        };
+                        let ret_byval = if self.first_pass.structs.contains(&ret_ident) {
+                            quote! { #ret_ident::wrap(#invoke_byval) }
+                        }
+                        else {
+                            quote! { #invoke_byval }
+                        };
+                        let invoke_byref = match rhs_is_ptr {
+                            MayaVisitPtrType::NotPtr => quote! {
+                                self_._native.#fn_ident(*other)
+                            },
+                            MayaVisitPtrType::ConstPtr => quote! {
+                                self_._native.#fn_ident(&other._native)
+                            },
+                            MayaVisitPtrType::MutPtr => quote! {
+                                self_._native.#fn_ident(&mut other._native)
+                            },
+                        };
+                        let ret_byref = if self.first_pass.structs.contains(&ret_ident) {
+                            quote! { #ret_ident::wrap(#invoke_byref) }
+                        }
+                        else {
+                            quote! { #invoke_byref }
+                        };
+                        // Because the Maya API is weird enough as-is...
+                        // If the lhs or rhs of the argument is non-const, clone it before using.
+                        let self_mut_fix = match *fn_inputs.first().unwrap().value() {
+                            &syn::FnArg::SelfRef(ref self_arg) if self_arg.mutability.is_some() => {
+                                quote! { let mut self_  = self.clone(); }
+                            },
+                            _ => quote! {
+                                let self_ = self;
+                            }
+                        };
+                        let other_mut_fix = match rhs_is_ptr {
+                            MayaVisitPtrType::MutPtr => quote! {
+                                let mut other = other.clone();
+                            },
+                            _ => quote! {}
+                        };
+                        // Since we're just auto-generating everything, generate op traits for
+                        // both ref and non-ref index types.
+                        return match ret_is_ptr {
+                            MayaVisitPtrType::NotPtr => quote! {
+                                impl ::std::ops::Rem<#rhs_ident> for #impl_type {
+                                    type Output = #ret_ident;
+                                    fn rem(self, other: #rhs_ident) -> #ret_ident {
+                                        #self_mut_fix
+                                        #other_mut_fix
+                                        unsafe { #ret_byval }
+                                    }
+                                }
+                                impl<'a> ::std::ops::Rem<#rhs_ident> for &'a #impl_type {
+                                    type Output = #ret_ident;
+                                    fn rem(self, other: #rhs_ident) -> #ret_ident {
+                                        #self_mut_fix
+                                        #other_mut_fix
+                                        unsafe { #ret_byval }
+                                    }
+                                }
+                                impl<'b> ::std::ops::Rem<&'b #rhs_ident> for #impl_type {
+                                    type Output = #ret_ident;
+                                    fn rem(self, other: &'b #rhs_ident) -> #ret_ident {
+                                        #self_mut_fix
+                                        #other_mut_fix
+                                        unsafe { #ret_byref }
+                                    }
+                                }
+                                impl<'a, 'b> ::std::ops::Rem<&'b #rhs_ident> for &'a #impl_type {
+                                    type Output = #ret_ident;
+                                    fn rem(self, other: &'b #rhs_ident) -> #ret_ident {
+                                        #self_mut_fix
+                                        #other_mut_fix
+                                        unsafe { #ret_byref }
+                                    }
+                                }
+                            },
+                            _ => quote! {
+                                impl ::std::ops::Index<#rhs_ident> for #impl_type {
+                                    type Output = #ret_ident;
+                                    fn index(&self, other: #rhs_ident) -> &#ret_ident {
+                                        #self_mut_fix
+                                        #other_mut_fix
+                                        unsafe { &*#ret_byval }
+                                    }
+                                }
+                                impl<'b> ::std::ops::Index<&'b #rhs_ident> for #impl_type {
+                                    type Output = #ret_ident;
+                                    fn index(&self, other: &'b #rhs_ident) -> &#ret_ident {
+                                        #self_mut_fix
+                                        #other_mut_fix
+                                        unsafe { &*#ret_byref }
+                                    }
+                                }
+                            }
+                        };
+                    }
+                }
+            }
+        }
+
+        return quote! {};
+    }
 }
 impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
     fn visit_item_mod(&mut self, i: &'ast ItemMod) {
@@ -278,6 +404,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 self.impl_partialeq.clear();
                 syn::visit::visit_item_impl(self, i);
 
+                let ns = &self.cur_namespace;
                 let impl_fns = &self.impl_fns;
                 let impl_traits = &self.impl_traits;
                 let impl_partialeq = if self.impl_partialeq.is_empty() {
@@ -296,6 +423,9 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 };
                 self.tokens.push(quote! {
                     impl #impl_type {
+                        pub fn wrap(native: #( #ns :: )* #impl_type) -> Self {
+                            Self { _native: native }
+                        }
                         #( #impl_fns )*
                     }
                     #( #impl_traits )*
@@ -318,7 +448,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                     self.impl_traits.push(quote! {
                         impl Default for #impl_type {
                             fn default() -> Self {
-                                Self { _native: unsafe { #( #ns :: )* #impl_type :: #fn_ident() } }
+                                Self::wrap(unsafe { #( #ns :: )* #impl_type :: #fn_ident() })
                             }
                         }
                     });
@@ -416,7 +546,8 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 }
                 // [] is a special sorta-binary operator.
                 else if fn_ident.to_string().starts_with("operator_index") {
-                    // XXX
+                    let q = self.quote_index_operator(i);
+                    self.impl_traits.push(q);
                 }
                 // Remaining operators (binary).
                 else if fn_ident.to_string().starts_with("operator_add") {
