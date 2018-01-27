@@ -29,6 +29,7 @@ enum MayaVisitPtrType {
 }
 struct MayaVisitFirstPass {
     pub structs: HashSet<syn::Ident>,
+    pub types: HashSet<syn::Ident>
 }
 impl<'ast> syn::visit::Visit<'ast> for MayaVisitFirstPass {
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
@@ -40,6 +41,18 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitFirstPass {
                 !ident_name.starts_with("MPx")
         {
             self.structs.insert(i.ident);
+        }
+    }
+    fn visit_item_type(&mut self, i: &'ast ItemType) {
+        let ident_name = i.ident.to_string();
+        if ident_name.starts_with("M") {
+            self.types.insert(i.ident);
+        }
+    }
+    fn visit_item_enum(&mut self, i: &'ast ItemEnum) {
+        let ident_name = i.ident.to_string();
+        if ident_name.starts_with("M") {
+            self.types.insert(i.ident);
         }
     }
 }
@@ -594,18 +607,22 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
         let ns = &self.cur_namespace;
 
         // Verbatim typedef.
-        self.tokens.push(quote! {
-            pub type #ident = #( #ns :: )* #ident;
-        });
+        if self.first_pass.types.contains(ident) {
+            self.tokens.push(quote! {
+                pub type #ident = #( #ns :: )* #ident;
+            });
+        }
     }
     fn visit_item_enum(&mut self, i: &'ast ItemEnum) {
         let ident = &i.ident;
         let ns = &self.cur_namespace;
         
         // Typedef the actual enum.
-        self.tokens.push(quote! {
-            pub type #ident = #( #ns :: )* #ident;
-        });
+        if self.first_pass.types.contains(ident) {
+            self.tokens.push(quote! {
+                pub type #ident = #( #ns :: )* #ident;
+            });
+        }
     }
 }
 
@@ -674,7 +691,7 @@ fn main() {
 
     // Write the high-level Maya API bindings to the $OUT_DIR/maya.rs file.
     let file = syn::parse_file(&bindings.to_string()).expect("Unable to parse file");
-    let mut first_pass = MayaVisitFirstPass { structs: HashSet::new() };
+    let mut first_pass = MayaVisitFirstPass { structs: HashSet::new(), types: HashSet::new() };
     syn::visit::visit_file(&mut first_pass, &file);
     let mut second_pass = MayaVisitSecondPass::new(first_pass);
     syn::visit::visit_file(&mut second_pass, &file);
