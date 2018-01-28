@@ -165,8 +165,8 @@ impl MayaVisitSecondPass {
             _ => None
         }
     }
-    fn quote_binary_operator(&self, i: &ImplItemMethod, trait_name: &syn::Ident,
-        fn_name: &syn::Ident) -> quote::Tokens
+    fn process_binary_operator(&mut self, i: &ImplItemMethod, trait_name: &syn::Ident,
+        fn_name: &syn::Ident)
     {
         let impl_type = self.impl_type;
         let fn_ident = &i.sig.ident;
@@ -222,7 +222,7 @@ impl MayaVisitSecondPass {
                         };
                         // Since we're just auto-generating everything, generate all op traits
                         // for ref/non-ref combos.
-                        return quote! {
+                        self.impl_traits.push(quote! {
                             impl ::std::ops::#trait_name<#rhs_ident> for #impl_type {
                                 type Output = #ret_ident;
                                 fn #fn_name(self, other: #rhs_ident) -> #ret_ident {
@@ -257,13 +257,11 @@ impl MayaVisitSecondPass {
                                     #ret_byref
                                 }
                             }
-                        };
+                        });
                     }
                 }
             }
         }
-
-        return quote! {};
     }
     fn process_index_operator(&mut self, i: &ImplItemMethod) {
         let impl_type = self.impl_type;
@@ -693,34 +691,28 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 }
                 // Remaining operators (binary).
                 else if fn_ident.to_string().starts_with("operator_add") {
-                    let q = self.quote_binary_operator(
+                    self.process_binary_operator(
                             i, &syn::Ident::from("Add"), &syn::Ident::from("add"));
-                    self.impl_traits.push(q);
                 }
                 else if fn_ident.to_string().starts_with("operator_sub") {
-                    let q = self.quote_binary_operator(
+                    self.process_binary_operator(
                             i, &syn::Ident::from("Sub"), &syn::Ident::from("sub"));
-                    self.impl_traits.push(q);
                 }
                 else if fn_ident.to_string().starts_with("operator_mul") {
-                    let q = self.quote_binary_operator(
+                    self.process_binary_operator(
                             i, &syn::Ident::from("Mul"), &syn::Ident::from("mul"));
-                    self.impl_traits.push(q);
                 }
                 else if fn_ident.to_string().starts_with("operator_div") {
-                    let q = self.quote_binary_operator(
+                    self.process_binary_operator(
                             i, &syn::Ident::from("Div"), &syn::Ident::from("div"));
-                    self.impl_traits.push(q);
                 }
                 else if fn_ident.to_string().starts_with("operator_or") {
-                    let q = self.quote_binary_operator(
+                    self.process_binary_operator(
                             i, &syn::Ident::from("BitOr"), &syn::Ident::from("bitor"));
-                    self.impl_traits.push(q);
                 }
                 else if fn_ident.to_string().starts_with("operator_xor") {
-                    let q = self.quote_binary_operator(
+                    self.process_binary_operator(
                             i, &syn::Ident::from("BitXor"), &syn::Ident::from("bitxor"));
-                    self.impl_traits.push(q);
                 }
             },
             MayaVisitMethodType::Normal => {

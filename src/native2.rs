@@ -21,19 +21,36 @@ impl<'a> From<&'a str> for root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION
 }
 
 use std::borrow::Borrow;
+/// Used for implementing overloaded Get::get via generics.
 pub trait Getter<T> {
     type Output;
     fn get(self, arr: &T) -> Self::Output;
 }
+/// Used for implementing overloaded Set::set via generics.
 pub trait Setter<'i, T> {
     type Input;
     fn set(self, arr: &mut T, input: &Self::Input);
 }
+/// Trait for exposing get-indexing on Maya native arrays.
+/// Maya arrays and array-like objects such as plugs implement this trait; use get() to index
+/// into the array and retrieve the value at the given index in the same way that you would use
+/// the [] index operator in C++. This is overloaded if the corresponding C++ implementation is
+/// overloaded.
+/// Due to limitations with index operator overloading in Rust, the [] operator isn't directly
+/// supported, and you need to use get() instead.
 pub trait Get {
     fn get<T>(&self, index: T) -> T::Output where T: Getter<Self>, Self: Sized {
         index.get(self)
     }
 }
+/// Trait for exposing set-indexing on Maya native arrays.
+/// Maya arrays and array-like objects such as plugs implement this trait; use set() to place a
+/// value at an index in the array in the same way that you would assign using the [] index operator
+/// in C++. Note that you can provide a reference or a value to be placed; they will be converted
+/// automatically depending on the C++ function signature. This is overloaded if the corresponding
+/// C++ implementation is overloaded.
+/// Due to limitations with index operator overloading in Rust, the [] operator isn't directly
+/// supported, and you need to use set() instead.
 pub trait Set {
     fn set<'i, T, Input: Borrow<T::Input>>(&mut self, index: T, value: Input)
         where T: Setter<'i, Self>, Self: Sized
