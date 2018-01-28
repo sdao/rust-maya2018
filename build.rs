@@ -11,17 +11,19 @@ use std::env;
 use std::path::PathBuf;
 use std::io::prelude::*;
 use std::fs::File;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
 use syn::{ItemImpl, ItemMod, ImplItemMethod, ItemType, ItemEnum, ItemStruct, Type};
 use regex::Regex;
 
+#[derive(PartialEq)]
 enum MayaVisitMethodType {
     Constructor,
     Destructor,
     Operator,
     Normal
 }
+#[derive(PartialEq)]
 enum MayaVisitPtrType {
     NotPtr,
     ConstPtr,
@@ -29,7 +31,7 @@ enum MayaVisitPtrType {
 }
 struct MayaVisitFirstPass {
     pub structs: HashSet<syn::Ident>,
-    pub types: HashSet<syn::Ident>
+    pub types: HashSet<syn::Ident>,
 }
 impl<'ast> syn::visit::Visit<'ast> for MayaVisitFirstPass {
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
@@ -65,9 +67,9 @@ struct MayaVisitSecondPass {
     impl_type: syn::Ident,
     impl_fns: Vec<quote::Tokens>,
     impl_traits: Vec<quote::Tokens>,
-    impl_partialeq: HashMap<syn::Ident, Vec<quote::Tokens>>,
-    impl_getters: HashMap<syn::Ident, quote::Tokens>,
-    impl_setters: HashMap<syn::Ident, quote::Tokens>,
+    impl_partialeq: BTreeMap<syn::Ident, Vec<quote::Tokens>>,
+    impl_getters: BTreeMap<syn::Ident, (MayaVisitPtrType, quote::Tokens)>,
+    impl_setters: BTreeMap<syn::Ident, quote::Tokens>,
 }
 impl MayaVisitSecondPass {
     pub fn new(first_pass: MayaVisitFirstPass) -> Self {
@@ -78,9 +80,9 @@ impl MayaVisitSecondPass {
             impl_type: syn::Ident::from("FAKE_IDENT"),
             impl_fns: vec![],
             impl_traits: vec![],
-            impl_partialeq: HashMap::new(),
-            impl_getters: HashMap::new(),
-            impl_setters: HashMap::new(),
+            impl_partialeq: BTreeMap::new(),
+            impl_getters: BTreeMap::new(),
+            impl_setters: BTreeMap::new(),
         }
     }
     fn process_method(ident: &syn::Ident) -> MayaVisitMethodType {
@@ -282,7 +284,6 @@ impl MayaVisitSecondPass {
                                 arr._native.#fn_ident(&mut self_._native)
                             },
                         };
-                        let ret_byval = self.wrap(&invoke_byval, &ret_ident);
                         let invoke_byref = match rhs_is_ptr {
                             MayaVisitPtrType::NotPtr => quote! {
                                 arr._native.#fn_ident(*self_)
@@ -294,17 +295,17 @@ impl MayaVisitSecondPass {
                                 arr._native.#fn_ident(&mut self_._native)
                             },
                         };
-                        let ret_byref = self.wrap(&invoke_byref, &ret_ident);
                         // Because the Maya API is weird enough as-is...
-                        // If the lhs or rhs of the argument is non-const, clone it before using.
-                        let self_mut_fix = match *fn_inputs.first().unwrap().value() {
+                        // arr must be non-mut in getters; if func requires mut, then clone.
+                        // self (indexer) must be non-mut everywhere.
+                        let arr_mut_fix = match *fn_inputs.first().unwrap().value() {
                             &syn::FnArg::SelfRef(ref self_arg)
                                 if self_arg.mutability.is_some() => quote! {
                                 let mut arr = arr.clone();
                             },
                             _ => quote! {}
                         };
-                        let other_mut_fix = match rhs_is_ptr {
+                        let indexer_mut_fix = match rhs_is_ptr {
                             MayaVisitPtrType::MutPtr => quote! {
                                 let mut self_  = self.clone();
                             },
@@ -313,78 +314,155 @@ impl MayaVisitSecondPass {
                             }
                         };
                         // Always return value, not pointer, from Getter. Prefer the native function
-                        // that returns by value, but fall back to dereferencing the pointer in the
-                        // case of one that doesn't return by value.
+                        // that returns by value, but fall back to dereferencing the pointer and
+                        // cloning in the case of one that doesn't return by value.
+                        // Thus, NotPtr always gets to insert its getter but ConstPtr and MutPtr
+                        // must check the priority order first.
                         match ret_is_ptr {
                             MayaVisitPtrType::NotPtr => {
-                                self.impl_getters.insert(rhs_ident, quote! {
+                                // Getter. Return as-is.
+                                let ret_byval = self.wrap(&invoke_byval, &ret_ident);
+                                let ret_byref = self.wrap(&invoke_byref, &ret_ident);
+                                self.impl_getters.insert(rhs_ident, (ret_is_ptr, quote! {
                                     impl<'a> Getter<#impl_type> for #rhs_ident {
                                         type Output = #ret_ident;
                                         fn get(self, arr: &#impl_type) -> Self::Output {
-                                            #self_mut_fix
-                                            #other_mut_fix
+                                            #arr_mut_fix
+                                            #indexer_mut_fix
                                             unsafe { #ret_byval }
                                         }
                                     }
                                     impl<'b> Getter<#impl_type> for &'b #rhs_ident {
                                         type Output = #ret_ident;
                                         fn get(self, arr: &#impl_type) -> Self::Output {
-                                            #self_mut_fix
-                                            #other_mut_fix
+                                            #arr_mut_fix
+                                            #indexer_mut_fix
                                             unsafe { #ret_byref }
                                         }
                                     }
-                                });
+                                }));
                             },
                             MayaVisitPtrType::ConstPtr => {
-                                self.impl_getters.entry(rhs_ident).or_insert(quote! {
-                                    impl Getter<#impl_type> for #rhs_ident {
-                                        type Output = #ret_ident;
-                                        fn get(self, arr: &#impl_type) -> Self::Output {
-                                            #self_mut_fix
-                                            #other_mut_fix
-                                            unsafe { *#ret_byval }
-                                        }
+                                // Getter. Must wrap pointer in value.
+                                let insert_ok = match self.impl_getters.get(&rhs_ident) {
+                                    Some(&(ref priority, _)) =>
+                                        *priority != MayaVisitPtrType::NotPtr,
+                                    _ => true
+                                };
+                                let retrieval = if self.first_pass.structs.contains(&ret_ident) {
+                                    quote! {
+                                        let mut ret = #ret_ident::default();
+                                        ret._native.operator_assign(ptr);
+                                        ret
                                     }
-                                    impl<'b> Getter<#impl_type> for &'b #rhs_ident {
-                                        type Output = #ret_ident;
-                                        fn get(self, arr: &#impl_type) -> Self::Output {
-                                            #self_mut_fix
-                                            #other_mut_fix
-                                            unsafe { *#ret_byref }
+                                }
+                                else {
+                                    quote! { *ptr }
+                                };
+                                if insert_ok {
+                                    self.impl_getters.insert(rhs_ident, (ret_is_ptr, quote! {
+                                        impl Getter<#impl_type> for #rhs_ident {
+                                            type Output = #ret_ident;
+                                            fn get(self, arr: &#impl_type) -> Self::Output {
+                                                #arr_mut_fix
+                                                #indexer_mut_fix
+                                                unsafe {
+                                                    let ptr = #invoke_byval;
+                                                    #retrieval
+                                                }
+                                            }
                                         }
-                                    }
-                                });
+                                        impl<'b> Getter<#impl_type> for &'b #rhs_ident {
+                                            type Output = #ret_ident;
+                                            fn get(self, arr: &#impl_type) -> Self::Output {
+                                                #arr_mut_fix
+                                                #indexer_mut_fix
+                                                unsafe {
+                                                    let ptr = #invoke_byref;
+                                                    #retrieval
+                                                }
+                                            }
+                                        }
+                                    }));
+                                }
                             },
                             MayaVisitPtrType::MutPtr => {
-                                self.impl_getters.entry(rhs_ident).or_insert(quote! {
-                                    impl Getter<#impl_type> for #rhs_ident {
-                                        type Output = #ret_ident;
-                                        fn get(self, arr: &#impl_type) -> Self::Output {
-                                            #self_mut_fix
-                                            #other_mut_fix
-                                            unsafe { *#ret_byval }
-                                        }
+                                // Getter. Must wrap pointer in value.
+                                let insert_ok = match self.impl_getters.get(&rhs_ident) {
+                                    Some(&(ref priority, _)) =>
+                                        *priority != MayaVisitPtrType::NotPtr &&
+                                        *priority != MayaVisitPtrType::ConstPtr,
+                                    _ => true
+                                };
+                                let retrieval = if self.first_pass.structs.contains(&ret_ident) {
+                                    quote! {
+                                        let mut ret = #ret_ident::default();
+                                        ret._native.operator_assign(ptr);
+                                        ret
                                     }
-                                    impl<'b> Getter<#impl_type> for &'b #rhs_ident {
-                                        type Output = #ret_ident;
-                                        fn get(self, arr: &#impl_type) -> Self::Output {
-                                            #self_mut_fix
-                                            #other_mut_fix
-                                            unsafe { *#ret_byref }
+                                }
+                                else {
+                                    quote! { *ptr }
+                                };
+                                if insert_ok {
+                                    self.impl_getters.insert(rhs_ident, (ret_is_ptr, quote! {
+                                        impl Getter<#impl_type> for #rhs_ident {
+                                            type Output = #ret_ident;
+                                            fn get(self, arr: &#impl_type) -> Self::Output {
+                                                #arr_mut_fix
+                                                #indexer_mut_fix
+                                                unsafe {
+                                                    let ptr = #invoke_byval;
+                                                    #retrieval
+                                                }
+                                            }
                                         }
-                                    }
-                                });
+                                        impl<'b> Getter<#impl_type> for &'b #rhs_ident {
+                                            type Output = #ret_ident;
+                                            fn get(self, arr: &#impl_type) -> Self::Output {
+                                                #arr_mut_fix
+                                                #indexer_mut_fix
+                                                unsafe {
+                                                    let ptr = #invoke_byref;
+                                                    #retrieval
+                                                }
+                                            }
+                                        }
+                                    }));
+                                }
+
+                                // Setter. Accept by val if primitive, by ref if struct.
                                 let unwrap_value = self.unwrap(&quote! { value }, &ret_ident);
+                                let assignment = if self.first_pass.structs.contains(&ret_ident) {
+                                    quote! { (*ptr).operator_assign(&#unwrap_value); }
+                                }
+                                else {
+                                    quote! { *ptr = #unwrap_value; }
+                                };
+                                let input_ident = if self.first_pass.structs.contains(&ret_ident) {
+                                    quote! { &'i #ret_ident }
+                                }
+                                else {
+                                    quote! { #ret_ident }
+                                };
                                 self.impl_setters.insert(rhs_ident, quote! {
-                                    impl Setter<#impl_type> for #rhs_ident {
-                                        type Input = #ret_ident;
+                                    impl<'i> Setter<'i, #impl_type> for #rhs_ident {
+                                        type Input = #input_ident;
                                         fn set(self, arr: &mut #impl_type, value: Self::Input) {
-                                            #self_mut_fix
-                                            #other_mut_fix
+                                            #indexer_mut_fix
                                             unsafe {
                                                 let ptr = #invoke_byval;
-                                                *ptr = #unwrap_value;
+                                                #assignment
+                                            }
+                                        }
+                                    }
+                                    impl<'b, 'i> Setter<'i, #impl_type> for &'b #rhs_ident {
+                                        type Input = #input_ident;
+                                        fn set(self, arr: &mut #impl_type, value: Self::Input) {
+                                            #indexer_mut_fix
+                                            unsafe {
+                                                let ptr = #invoke_byref;
+                                                #assignment
                                             }
                                         }
                                     }
@@ -483,7 +561,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                     }
                     partialeqs
                 };
-                let impl_getters = self.impl_getters.values();
+                let impl_getters = self.impl_getters.values().map(|x| &x.1);
                 let impl_setters = self.impl_setters.values();
                 self.tokens.push(quote! {
                     impl #impl_type {
@@ -720,6 +798,7 @@ fn main() {
         .whitelist_type("Shim.*")
         .whitelist_type(".*MArgList")
         .whitelist_type(".*MDagPath")
+        .whitelist_type(".*MDagPathArray")
         .whitelist_type(".*MFnBase")
         .whitelist_type(".*MFnDagNode")
         .whitelist_type(".*MFnPlugin")

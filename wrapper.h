@@ -1,6 +1,7 @@
 #include <maya/MApiNamespace.h>
 #include <maya/MArgList.h>
 #include <maya/MDagPath.h>
+#include <maya/MDagPathArray.h>
 #include <maya/MFnDagNode.h>
 #include <maya/MFnBase.h>
 #include <maya/MFnPlugin.h>

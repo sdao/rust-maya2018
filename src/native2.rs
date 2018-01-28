@@ -24,7 +24,7 @@ pub trait Getter<T> {
     type Output;
     fn get(self, arr: &T) -> Self::Output;
 }
-pub trait Setter<T> {
+pub trait Setter<'i, T> {
     type Input;
     fn set(self, arr: &mut T, input: Self::Input);
 }
@@ -34,7 +34,7 @@ pub trait Get {
     }
 }
 pub trait Set {
-    fn set<T>(&mut self, index: T, value: T::Input) where T: Setter<Self>, Self: Sized {
+    fn set<'i, T>(&mut self, index: T, value: T::Input) where T: Setter<'i, Self>, Self: Sized {
         index.set(self, value)
     }
 }
