@@ -28,7 +28,7 @@ pub trait Getter<T> {
 }
 /// Used for implementing overloaded Set::set via generics.
 pub trait Setter<'i, T> {
-    type Input;
+    type Input: ?Sized;
     fn set(self, arr: &mut T, input: &Self::Input);
 }
 /// Trait for exposing get-indexing on Maya native arrays.

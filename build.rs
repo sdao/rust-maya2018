@@ -165,6 +165,16 @@ impl MayaVisitSecondPass {
             _ => None
         }
     }
+    /// Substitutes the Rust identifier for one better-suited in an input argument context.
+    /// Currently, just allows you to use &str instead of &String.
+    fn inputize(ty_ident: &syn::Ident) -> syn::Ident {
+        if *ty_ident == syn::Ident::from("String") {
+            syn::Ident::from("str")
+        }
+        else {
+            *ty_ident
+        }
+    }
     fn process_binary_operator(&mut self, i: &ImplItemMethod, trait_name: &syn::Ident,
         fn_name: &syn::Ident)
     {
@@ -175,6 +185,7 @@ impl MayaVisitSecondPass {
             if let Some((rhs_ident, rhs_is_ptr)) =
                 MayaVisitSecondPass::quote_ty(&fn_arg.ty)
             {
+                let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
                 if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
                     if let Some((ret_ident, _)) =
                         MayaVisitSecondPass::quote_ty(&ret_ty)
@@ -271,6 +282,7 @@ impl MayaVisitSecondPass {
             if let Some((rhs_ident, rhs_is_ptr)) =
                 MayaVisitSecondPass::quote_ty(&fn_arg.ty)
             {
+                let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
                 if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
                     if let Some((ret_ident, ret_is_ptr)) =
                         MayaVisitSecondPass::quote_ty(&ret_ty)
@@ -434,8 +446,12 @@ impl MayaVisitSecondPass {
                                 }
 
                                 // Setter. Accepts both reference and value input via Borrow.
+                                let ret_ident = MayaVisitSecondPass::inputize(&ret_ident);
                                 let unwrap_value = self.unwrap(&quote! { value }, &ret_ident);
-                                let assignment = if self.is_struct(&ret_ident) {
+                                let assignment = if ret_ident == syn::Ident::from("str") {
+                                    quote! { (*ptr).operator_assign(&#unwrap_value); }
+                                }
+                                else if self.is_struct(&ret_ident) {
                                     quote! { (*ptr).operator_assign(&#unwrap_value); }
                                 }
                                 else {
@@ -473,8 +489,12 @@ impl MayaVisitSecondPass {
     // Wraps the raw result of the given native expression with the given native type.
     fn wrap(&self, native_expr: &quote::Tokens, rust_ty: &syn::Ident) -> quote::Tokens {
         if *rust_ty == syn::Ident::from("String") {
-            // Special, we auto-convert the MString into a Rust string.
+            // Special, we auto-convert the MString into a Rust String.
             quote! { String::from(&#native_expr) }
+        }
+        else if *rust_ty == syn::Ident::from("str") {
+            // Special, we auto-convert the MString into a Rust &str.
+            quote! { String::from(&#native_expr).as_str() }
         }
         else if self.first_pass.structs.contains(&rust_ty) {
             quote! { #rust_ty::wrap(#native_expr) }
@@ -485,10 +505,16 @@ impl MayaVisitSecondPass {
     }
     fn unwrap(&self, rust_expr: &quote::Tokens, rust_ty: &syn::Ident) -> quote::Tokens {
         if *rust_ty == syn::Ident::from("String") {
-            // Special, we auto-convert from Rust string back into MString.
+            // Special, we auto-convert from Rust String back into MString.
             quote! {
                 root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(
                         #rust_expr.as_str())
+            }
+        }
+        else if *rust_ty == syn::Ident::from("str") {
+            // Special, we auto-convert from Rust &str back into MString.
+            quote! {
+                root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(#rust_expr)
             }
         }
         else if self.first_pass.structs.contains(&rust_ty) {
@@ -633,6 +659,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         if let Some((rhs_ident, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
+                            let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
                             let rhs_access = match rhs_is_ptr {
                                 MayaVisitPtrType::NotPtr => quote! { *other },
                                 _ => quote! { &other._native }
@@ -653,6 +680,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         if let Some((rhs_ident, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
+                            let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
                             let rhs_access = match rhs_is_ptr {
                                 MayaVisitPtrType::NotPtr => quote! { *other },
                                 _ => quote! { &other._native }
