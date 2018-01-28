@@ -117,6 +117,10 @@ impl MayaVisitSecondPass {
             _ => false
         }
     }
+    /// Is this an OpenMaya struct type?
+    fn is_struct(&self, ident: &syn::Ident) -> bool {
+        self.first_pass.structs.contains(ident) || *ident == syn::Ident::from("String")
+    }
     /// Convert type from bindgen to high-level API.
     /// Returns: Option((ident, is_ptr)) where ident is the new type token; is_ptr is
     /// whether the type is a *const/mut ident.
@@ -349,7 +353,7 @@ impl MayaVisitSecondPass {
                                         *priority != MayaVisitPtrType::NotPtr,
                                     _ => true
                                 };
-                                let retrieval = if self.first_pass.structs.contains(&ret_ident) {
+                                let retrieval = if self.is_struct(&ret_ident) {
                                     quote! {
                                         let mut ret = #ret_ident::default();
                                         ret._native.operator_assign(ptr);
@@ -394,7 +398,7 @@ impl MayaVisitSecondPass {
                                         *priority != MayaVisitPtrType::ConstPtr,
                                     _ => true
                                 };
-                                let retrieval = if self.first_pass.structs.contains(&ret_ident) {
+                                let retrieval = if self.is_struct(&ret_ident) {
                                     quote! {
                                         let mut ret = #ret_ident::default();
                                         ret._native.operator_assign(ptr);
@@ -431,24 +435,18 @@ impl MayaVisitSecondPass {
                                     }));
                                 }
 
-                                // Setter. Accept by val if primitive, by ref if struct.
+                                // Setter. Accepts both reference and value input via Borrow.
                                 let unwrap_value = self.unwrap(&quote! { value }, &ret_ident);
-                                let assignment = if self.first_pass.structs.contains(&ret_ident) {
+                                let assignment = if self.is_struct(&ret_ident) {
                                     quote! { (*ptr).operator_assign(&#unwrap_value); }
                                 }
                                 else {
-                                    quote! { *ptr = #unwrap_value; }
-                                };
-                                let input_ident = if self.first_pass.structs.contains(&ret_ident) {
-                                    quote! { &'i #ret_ident }
-                                }
-                                else {
-                                    quote! { #ret_ident }
+                                    quote! { *ptr = *#unwrap_value; }
                                 };
                                 self.impl_setters.insert(rhs_ident, quote! {
                                     impl<'i> Setter<'i, #impl_type> for #rhs_ident {
-                                        type Input = #input_ident;
-                                        fn set(self, arr: &mut #impl_type, value: Self::Input) {
+                                        type Input = #ret_ident;
+                                        fn set(self, arr: &mut #impl_type, value: &Self::Input) {
                                             #indexer_mut_fix
                                             unsafe {
                                                 let ptr = #invoke_byval;
@@ -457,8 +455,8 @@ impl MayaVisitSecondPass {
                                         }
                                     }
                                     impl<'b, 'i> Setter<'i, #impl_type> for &'b #rhs_ident {
-                                        type Input = #input_ident;
-                                        fn set(self, arr: &mut #impl_type, value: Self::Input) {
+                                        type Input = #ret_ident;
+                                        fn set(self, arr: &mut #impl_type, value: &Self::Input) {
                                             #indexer_mut_fix
                                             unsafe {
                                                 let ptr = #invoke_byref;
@@ -491,7 +489,8 @@ impl MayaVisitSecondPass {
         if *rust_ty == syn::Ident::from("String") {
             // Special, we auto-convert from Rust string back into MString.
             quote! {
-                root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(&*#rust_expr)
+                root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(
+                        #rust_expr.as_str())
             }
         }
         else if self.first_pass.structs.contains(&rust_ty) {

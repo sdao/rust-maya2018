@@ -20,13 +20,14 @@ impl<'a> From<&'a str> for root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION
     }
 }
 
+use std::borrow::Borrow;
 pub trait Getter<T> {
     type Output;
     fn get(self, arr: &T) -> Self::Output;
 }
 pub trait Setter<'i, T> {
     type Input;
-    fn set(self, arr: &mut T, input: Self::Input);
+    fn set(self, arr: &mut T, input: &Self::Input);
 }
 pub trait Get {
     fn get<T>(&self, index: T) -> T::Output where T: Getter<Self>, Self: Sized {
@@ -34,8 +35,10 @@ pub trait Get {
     }
 }
 pub trait Set {
-    fn set<'i, T>(&mut self, index: T, value: T::Input) where T: Setter<'i, Self>, Self: Sized {
-        index.set(self, value)
+    fn set<'i, T, Input: Borrow<T::Input>>(&mut self, index: T, value: Input)
+        where T: Setter<'i, Self>, Self: Sized
+    {
+        index.set(self, value.borrow())
     }
 }
 
