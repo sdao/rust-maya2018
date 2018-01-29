@@ -14,6 +14,7 @@ use std::fs::File;
 use std::collections::{BTreeMap, HashSet};
 
 use syn::{ItemImpl, ItemMod, ImplItemMethod, ItemType, ItemEnum, ItemStruct, Type};
+use quote::ToTokens;
 use regex::Regex;
 
 #[derive(PartialEq)]
@@ -31,12 +32,24 @@ enum MayaVisitPtrType {
 }
 struct MayaVisitFirstPass {
     pub structs: HashSet<syn::Ident>,
+    pub impls: HashSet<syn::Ident>,
     pub types: HashSet<syn::Ident>,
+    pub excluded: HashSet<syn::Ident>,
+}
+impl MayaVisitFirstPass {
+    pub fn new() -> MayaVisitFirstPass {
+        MayaVisitFirstPass {
+            structs: HashSet::new(),
+            impls: HashSet::new(),
+            types: HashSet::new(),
+            excluded: HashSet::new(),
+        }
+    }
 }
 impl<'ast> syn::visit::Visit<'ast> for MayaVisitFirstPass {
     fn visit_item_struct(&mut self, i: &'ast ItemStruct) {
-        // Skip MStrings because we'll wrap those in the API as str/String and not expose.
         // Skip MPx classes because we need to implement manual shims for those.
+        // Skip Maya internal classes/bindgen internal classes.
         let ident_name = i.ident.to_string();
         if ident_name.starts_with("M") &&
                 !ident_name.starts_with("MPx") &&
@@ -46,17 +59,35 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitFirstPass {
         {
             self.structs.insert(i.ident);
         }
+        else {
+            self.excluded.insert(i.ident);
+        }
+    }
+    fn visit_item_impl(&mut self, i: &'ast ItemImpl) {
+        match *i.self_ty {
+            Type::Path(ref p) => {
+                let impl_type = p.path.segments.last().unwrap().value().ident;
+                self.impls.insert(impl_type);
+            },
+            _ => {}
+        }
     }
     fn visit_item_type(&mut self, i: &'ast ItemType) {
         let ident_name = i.ident.to_string();
         if ident_name.starts_with("M") {
             self.types.insert(i.ident);
         }
+        else {
+            self.excluded.insert(i.ident);
+        }
     }
     fn visit_item_enum(&mut self, i: &'ast ItemEnum) {
         let ident_name = i.ident.to_string();
         if ident_name.starts_with("M") {
             self.types.insert(i.ident);
+        }
+        else {
+            self.excluded.insert(i.ident);
         }
     }
 }
@@ -119,7 +150,22 @@ impl MayaVisitSecondPass {
     }
     /// Is this an OpenMaya struct type?
     fn is_struct(&self, ident: &syn::Ident) -> bool {
-        self.first_pass.structs.contains(ident) || *ident == syn::Ident::from("String")
+        self.first_pass.structs.contains(ident)
+    }
+    /// Was this one of the OpenMaya excluded struct/enum/types?
+    fn is_excluded(&self, ident: &syn::Ident) -> bool {
+        self.first_pass.excluded.contains(ident)
+    }
+    /// Is this type implemented with the bindings we have?
+    /// i.e. the type must be a Rust native type or an OpenMaya type with an impl.
+    fn is_implemented(&self, ident: &syn::Ident) -> bool {
+        if self.is_excluded(&ident) {
+            return false;
+        }
+        if self.is_struct(&ident) && !self.first_pass.impls.contains(&ident) {
+            return false;
+        }
+        return true;
     }
     /// Convert type from bindgen to high-level API.
     /// Returns: Option((ident, is_ptr)) where ident is the new type token; is_ptr is
@@ -129,21 +175,23 @@ impl MayaVisitSecondPass {
             &syn::Type::Path(ref ty) => {
                 let name = ty.path.segments.last().unwrap().value().ident;
                 match name.to_string().as_str() {
-                    "c_char" => Some((syn::Ident::from("i8"), MayaVisitPtrType::NotPtr)),
+                    "c_char" => None, // XXX need to handle chars
                     "c_double" => Some((syn::Ident::from("f64"), MayaVisitPtrType::NotPtr)),
                     "c_float" => Some((syn::Ident::from("f32"), MayaVisitPtrType::NotPtr)),
                     "c_int" => Some((syn::Ident::from("i32"), MayaVisitPtrType::NotPtr)),
                     "c_long" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
                     "c_longlong" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
-                    "c_schar" => Some((syn::Ident::from("i8"), MayaVisitPtrType::NotPtr)),
+                    "c_schar" => None, // XXX need to handle chars
                     "c_short" => Some((syn::Ident::from("i16"), MayaVisitPtrType::NotPtr)),
                     "c_uchar" => Some((syn::Ident::from("u8"), MayaVisitPtrType::NotPtr)),
                     "c_uint" => Some((syn::Ident::from("u32"), MayaVisitPtrType::NotPtr)),
                     "c_ulong" => Some((syn::Ident::from("u64"), MayaVisitPtrType::NotPtr)),
                     "c_ulonglong" => Some((syn::Ident::from("u64"), MayaVisitPtrType::NotPtr)),
                     "c_ushort" => Some((syn::Ident::from("u16"), MayaVisitPtrType::NotPtr)),
+                    "c_void" => None, // XXX maybe handle in unsafe fn
+                    "MInt64" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
                     "MString" => Some((syn::Ident::from("String"), MayaVisitPtrType::NotPtr)),
-                    _ => Some((name, MayaVisitPtrType::NotPtr))
+                    _ => Some((name, MayaVisitPtrType::NotPtr)),
                 }
             },
             &syn::Type::Ptr(ref ty) => {
@@ -167,8 +215,10 @@ impl MayaVisitSecondPass {
     }
     /// Substitutes the Rust identifier for one better-suited in an input argument context.
     /// Currently, just allows you to use &str instead of &String.
-    fn inputize(ty_ident: &syn::Ident) -> syn::Ident {
-        if *ty_ident == syn::Ident::from("String") {
+    /// Note that you can't use &str instead of String since the object must be moved.
+    /// XXX can we auto-upgrade String sites to be &str since we're wrapping anwyays?
+    fn inputize(ty_ident: &syn::Ident, is_ptr: &MayaVisitPtrType) -> syn::Ident {
+        if *ty_ident == syn::Ident::from("String") && *is_ptr != MayaVisitPtrType::NotPtr {
             syn::Ident::from("str")
         }
         else {
@@ -185,7 +235,7 @@ impl MayaVisitSecondPass {
             if let Some((rhs_ident, rhs_is_ptr)) =
                 MayaVisitSecondPass::quote_ty(&fn_arg.ty)
             {
-                let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
+                let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
                 if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
                     if let Some((ret_ident, _)) =
                         MayaVisitSecondPass::quote_ty(&ret_ty)
@@ -282,7 +332,7 @@ impl MayaVisitSecondPass {
             if let Some((rhs_ident, rhs_is_ptr)) =
                 MayaVisitSecondPass::quote_ty(&fn_arg.ty)
             {
-                let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
+                let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
                 if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
                     if let Some((ret_ident, ret_is_ptr)) =
                         MayaVisitSecondPass::quote_ty(&ret_ty)
@@ -337,7 +387,8 @@ impl MayaVisitSecondPass {
                                 // Getter. Return as-is.
                                 let ret_byval = self.wrap(&invoke_byval, &ret_ident);
                                 let ret_byref = self.wrap(&invoke_byref, &ret_ident);
-                                self.impl_getters.insert(rhs_ident, (ret_is_ptr, quote! {
+                                self.impl_getters.insert(rhs_ident, (MayaVisitPtrType::NotPtr,
+                                quote! {
                                     impl<'a> Getter<#impl_type> for #rhs_ident {
                                         type Output = #ret_ident;
                                         fn get(self, arr: &#impl_type) -> Self::Output {
@@ -374,7 +425,8 @@ impl MayaVisitSecondPass {
                                     quote! { *ptr }
                                 };
                                 if insert_ok {
-                                    self.impl_getters.insert(rhs_ident, (ret_is_ptr, quote! {
+                                    self.impl_getters.insert(rhs_ident, (MayaVisitPtrType::ConstPtr,
+                                    quote! {
                                         impl Getter<#impl_type> for #rhs_ident {
                                             type Output = #ret_ident;
                                             fn get(self, arr: &#impl_type) -> Self::Output {
@@ -419,7 +471,8 @@ impl MayaVisitSecondPass {
                                     quote! { *ptr }
                                 };
                                 if insert_ok {
-                                    self.impl_getters.insert(rhs_ident, (ret_is_ptr, quote! {
+                                    self.impl_getters.insert(rhs_ident, (MayaVisitPtrType::MutPtr,
+                                    quote! {
                                         impl Getter<#impl_type> for #rhs_ident {
                                             type Output = #ret_ident;
                                             fn get(self, arr: &#impl_type) -> Self::Output {
@@ -446,13 +499,15 @@ impl MayaVisitSecondPass {
                                 }
 
                                 // Setter. Accepts both reference and value input via Borrow.
-                                let ret_ident = MayaVisitSecondPass::inputize(&ret_ident);
-                                let unwrap_value = self.unwrap(&quote! { value }, &ret_ident);
+                                let ret_ident = MayaVisitSecondPass::inputize(
+                                        &ret_ident, &ret_is_ptr);
+                                let unwrap_value = self.unwrap(&quote! { value }, &ret_ident,
+                                        MayaVisitPtrType::ConstPtr);
                                 let assignment = if ret_ident == syn::Ident::from("str") {
-                                    quote! { (*ptr).operator_assign(&#unwrap_value); }
+                                    quote! { (*ptr).operator_assign(#unwrap_value); }
                                 }
                                 else if self.is_struct(&ret_ident) {
-                                    quote! { (*ptr).operator_assign(&#unwrap_value); }
+                                    quote! { (*ptr).operator_assign(#unwrap_value); }
                                 }
                                 else {
                                     quote! { *ptr = *#unwrap_value; }
@@ -497,28 +552,45 @@ impl MayaVisitSecondPass {
             quote! { String::from(&#native_expr).as_str() }
         }
         else if self.first_pass.structs.contains(&rust_ty) {
-            quote! { #rust_ty::wrap(#native_expr) }
+            quote! { #rust_ty::from_native(#native_expr) }
         }
         else {
             quote! { #native_expr }
         }
     }
-    fn unwrap(&self, rust_expr: &quote::Tokens, rust_ty: &syn::Ident) -> quote::Tokens {
+    fn unwrap(&self, rust_expr: &quote::Tokens, rust_ty: &syn::Ident, is_ptr: MayaVisitPtrType)
+        -> quote::Tokens
+    {
+        let ref_token = match is_ptr {
+            MayaVisitPtrType::NotPtr => quote! {},
+            MayaVisitPtrType::ConstPtr => quote! { & },
+            MayaVisitPtrType::MutPtr => quote! { &mut },
+        };
         if *rust_ty == syn::Ident::from("String") {
             // Special, we auto-convert from Rust String back into MString.
             quote! {
+                #ref_token
                 root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(
-                        #rust_expr.as_str())
+                        (#rust_expr).as_str())
             }
         }
         else if *rust_ty == syn::Ident::from("str") {
             // Special, we auto-convert from Rust &str back into MString.
             quote! {
+                #ref_token
                 root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(#rust_expr)
             }
         }
         else if self.first_pass.structs.contains(&rust_ty) {
-            quote! { #rust_expr._native }
+            // Grab native either by value or by reference. By value consumes the original.
+            match is_ptr {
+                MayaVisitPtrType::NotPtr => {
+                    quote! { #ref_token #rust_ty::into_native(#rust_expr) }
+                },
+                _ => {
+                    quote! { #ref_token (#rust_expr)._native }
+                }
+            }
         }
         else {
             quote! { #rust_expr }
@@ -588,8 +660,11 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 let impl_setters = self.impl_setters.values();
                 self.tokens.push(quote! {
                     impl #impl_type {
-                        pub fn wrap(native: #( #ns :: )* #impl_type) -> Self {
+                        pub fn from_native(native: #( #ns :: )* #impl_type) -> Self {
                             Self { _native: native }
+                        }
+                        pub unsafe fn into_native(s: Self) -> #( #ns :: )* #impl_type {
+                            ::std::mem::transmute(s)
                         }
                         #( #impl_fns )*
                     }
@@ -615,7 +690,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                     self.impl_traits.push(quote! {
                         impl Default for #impl_type {
                             fn default() -> Self {
-                                Self::wrap(unsafe { #( #ns :: )* #impl_type :: #fn_ident() })
+                                Self::from_native(unsafe { #( #ns :: )* #impl_type :: #fn_ident() })
                             }
                         }
                     });
@@ -659,7 +734,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         if let Some((rhs_ident, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
-                            let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
+                            let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
                             let rhs_access = match rhs_is_ptr {
                                 MayaVisitPtrType::NotPtr => quote! { *other },
                                 _ => quote! { &other._native }
@@ -680,7 +755,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         if let Some((rhs_ident, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
-                            let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident);
+                            let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
                             let rhs_access = match rhs_is_ptr {
                                 MayaVisitPtrType::NotPtr => quote! { *other },
                                 _ => quote! { &other._native }
@@ -744,10 +819,187 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 }
             },
             MayaVisitMethodType::Normal => {
-                let name = i.sig.ident;
+                let impl_type = &self.impl_type;
+                let ns = &self.cur_namespace;
+
+                let fn_name = i.sig.ident;
+                let fn_inputs = &i.sig.decl.inputs;
+                let (ret_ident, ret_is_ptr) = match &i.sig.decl.output {
+                    &syn::ReturnType::Type(_, ref ret_ty) => {
+                        if let Some((ret_ident, ret_is_ptr)) =
+                            MayaVisitSecondPass::quote_ty(&ret_ty)
+                        {
+                            if !self.is_implemented(&ret_ident) {
+                                eprintln!("{}::{} -- skipping because return type `{}` not \
+                                        implemented in bindings", impl_type, fn_name, ret_ident);
+                                return;
+                            }
+                            (Some(ret_ident), ret_is_ptr)
+                        }
+                        else {
+                            // Unknown return type; skip function processing.
+                            return;
+                        }
+                    },
+                    &syn::ReturnType::Default => {
+                        (None, MayaVisitPtrType::NotPtr)
+                    }
+                };
+
+                // Conform the function to a Rust-style API.
+                let mut preface_transforms = vec![];
+                let mut postscript_transforms = vec![];
+                let mut inputs = vec![];
+                let mut outputs = vec![];
+                let mut invoke_args = vec![];
+                let mut self_call = false;
+                for input_pair in fn_inputs.pairs() {
+                    let arg = match input_pair {
+                        syn::punctuated::Pair::Punctuated(arg, _) => arg,
+                        syn::punctuated::Pair::End(arg) => arg
+                    };
+                    match arg {
+                        &syn::FnArg::SelfRef(..) | &syn::FnArg::SelfValue(..) => {
+                            inputs.push(quote! { #arg });
+                            self_call = true;
+                        },
+                        &syn::FnArg::Captured(ref arg) => {
+                            match MayaVisitSecondPass::quote_ty(&arg.ty) {
+                                Some((ty_ident, ty_is_ptr)) => {
+                                    let name = &arg.pat;
+                                    if !self.is_implemented(&ty_ident) {
+                                        eprintln!("{}::{} -- skipping because arg type \
+                                                `{}: {}` not implemented in bindings",
+                                                impl_type, fn_name, name.into_tokens(), ty_ident);
+                                        return;
+                                    }
+                                    match ty_is_ptr {
+                                        MayaVisitPtrType::MutPtr => {
+                                            if ty_ident == syn::Ident::from("MDataBlock") ||
+                                                    ty_ident == syn::Ident::from("MDGContext") {
+                                                // Special case -- mutable inputs.
+                                                // XXX -- may need to generalize check types here.
+                                                let ty_ident = MayaVisitSecondPass::inputize(
+                                                        &ty_ident, &MayaVisitPtrType::MutPtr);
+                                                let unwrapped = self.unwrap(
+                                                        &quote! { #name }, &ty_ident,
+                                                        MayaVisitPtrType::MutPtr);
+                                                inputs.push(quote! { #name: &mut #ty_ident });
+                                                invoke_args.push(unwrapped);
+                                            }
+                                            else {
+                                                // Normal case -- mutables are output parameters.
+                                                // Note: the declaration make #name into a value,
+                                                // not pointer, so we need to refer to it by
+                                                // &mut #name.
+                                                // Warning: DO NOT inputize in this case!
+                                                let unwrapped = self.unwrap(
+                                                        &quote! { &mut #name }, &ty_ident,
+                                                        MayaVisitPtrType::MutPtr);
+                                                preface_transforms.push(quote! {
+                                                    let mut #name = #ty_ident::default();
+                                                });
+                                                outputs.push((quote! { #name }, ty_ident));
+                                                invoke_args.push(unwrapped);
+                                            }
+                                        },
+                                        MayaVisitPtrType::ConstPtr => {
+                                            let ty_ident = MayaVisitSecondPass::inputize(
+                                                    &ty_ident, &MayaVisitPtrType::ConstPtr);
+                                            let unwrapped = self.unwrap(
+                                                    &quote! { #name }, &ty_ident,
+                                                    MayaVisitPtrType::ConstPtr);
+                                            inputs.push(quote! { #name: &#ty_ident });
+                                            invoke_args.push(unwrapped);
+                                        },
+                                        MayaVisitPtrType::NotPtr => {
+                                            let ty_ident = MayaVisitSecondPass::inputize(
+                                                    &ty_ident, &MayaVisitPtrType::NotPtr);
+                                            let unwrapped = self.unwrap(
+                                                    &quote! { #name }, &ty_ident,
+                                                    MayaVisitPtrType::NotPtr);
+                                            inputs.push(quote! { #name: #ty_ident });
+                                            invoke_args.push(unwrapped);
+                                        },
+                                    }
+                                }
+                                None => return // don't know how to handle
+                            };
+                        }
+                        _ => return // don't know how to handle
+                    };
+                }
+
+                let invoke = if self_call {
+                    quote! { self._native.#fn_name(#( #invoke_args ),*) }
+                }
+                else {
+                    quote! { #( #ns ::)* #impl_type :: #fn_name(#( #invoke_args ),*) }
+                };
+
+                if let Some(ret_ident) = ret_ident {
+                    match ret_is_ptr {
+                        MayaVisitPtrType::NotPtr => {
+                            // Need to wrap because the function returned a native arg by value.
+                            let ret_wrapped = self.wrap(&quote! { __maya_ret }, &ret_ident);
+                            outputs.push((ret_wrapped, ret_ident));
+                        },
+                        _ => {
+                            // Manually wrap by constructing the wrapper ahead-of-time, assigning
+                            // the pointer into the wrapper, and then returning the wrapper.
+                            // (Strings and primitives can be copied after-the-fact.)
+                            if ret_ident == syn::Ident::from("String") {
+                                postscript_transforms.push(quote! {
+                                    let __maya_ret_val = String::from(unsafe { &*__maya_ret });
+                                });
+                            }
+                            else if self.is_struct(&ret_ident) {
+                                postscript_transforms.push(quote! {
+                                    let mut __maya_ret_val = #ret_ident::default();
+                                    unsafe { __maya_ret_val._native.operator_assign(__maya_ret); }
+                                });
+                            }
+                            else {
+                                postscript_transforms.push(quote! {
+                                    let __maya_ret_val = unsafe { *__maya_ret };
+                                })
+                            }
+                            outputs.push((quote! { __maya_ret_val }, ret_ident));
+                        }
+                    }
+                }
+
+                let ret_decl = match outputs.len() {
+                    0 => quote! {},
+                    1 => {
+                        let &(_, only_ty) = outputs.first().unwrap();
+                        quote! { -> #only_ty }
+                    },
+                    _ => {
+                        let tys = outputs.iter().map(|&(_, ty)| ty);
+                        quote! { -> (#( #tys ),*) }
+                    }
+                };
+                let ret_statement = match outputs.len() {
+                    0 => quote! {},
+                    1 => {
+                        let &(ref only_ret, _) = outputs.first().unwrap();
+                        quote! { #only_ret }
+                    },
+                    _ => {
+                        let rets = outputs.iter().map(|&(ref ret, _)| ret);
+                        quote! { (#( #rets ),*) }
+                    }
+                };
+
                 self.impl_fns.push(quote! {
-                    pub fn #name() { unimplemented!() }
-                })
+                    pub fn #fn_name(#( #inputs ),*) #ret_decl {
+                        #( #preface_transforms )*
+                        let __maya_ret = unsafe { #invoke };
+                        #( #postscript_transforms )*
+                        #ret_statement
+                    }
+                });
             }
         }
     }
@@ -841,7 +1093,7 @@ fn main() {
 
     // Write the high-level Maya API bindings to the $OUT_DIR/maya.rs file.
     let file = syn::parse_file(&bindings.to_string()).expect("Unable to parse file");
-    let mut first_pass = MayaVisitFirstPass { structs: HashSet::new(), types: HashSet::new() };
+    let mut first_pass = MayaVisitFirstPass::new();
     syn::visit::visit_file(&mut first_pass, &file);
     let mut second_pass = MayaVisitSecondPass::new(first_pass);
     syn::visit::visit_file(&mut second_pass, &file);
