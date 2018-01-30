@@ -969,27 +969,74 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                     }
                 }
 
-                let ret_decl = match outputs.len() {
-                    0 => quote! {},
-                    1 => {
+                // Look through the outputs to see if one of them is MStatus-typed.
+                // If so, loft it into the Result type.
+                let mut status = None;
+                for i in 0..outputs.len() {
+                    let (_, ret_ident) = outputs[i];
+                    if ret_ident == syn::Ident::from("MStatus") {
+                        let (status_quote, _) = outputs.remove(i);
+                        status = Some(status_quote);
+                        break;
+                    }
+                }
+                let ret_decl = match (outputs.len(), &status) {
+                    (0, &None) => quote! {},
+                    (0, &Some(..)) => quote! { -> Result<(), MStatus> },
+                    (1, &None) => {
                         let &(_, only_ty) = outputs.first().unwrap();
                         quote! { -> #only_ty }
                     },
-                    _ => {
+                    (1, &Some(..)) => {
+                        let &(_, only_ty) = outputs.first().unwrap();
+                        quote! { -> Result<#only_ty, MStatus> }
+                    },
+                    (_, &None) => {
                         let tys = outputs.iter().map(|&(_, ty)| ty);
                         quote! { -> (#( #tys ),*) }
-                    }
+                    },
+                    (_, &Some(..)) => {
+                        let tys = outputs.iter().map(|&(_, ty)| ty);
+                        quote! { -> Result<(#( #tys ),*), MStatus> }
+                    },
                 };
-                let ret_statement = match outputs.len() {
-                    0 => quote! {},
-                    1 => {
+                let ret_statement = match (outputs.len(), status) {
+                    (0, None) => quote! {},
+                    (0, Some(status_quote)) => quote! {
+                        let __maya_ret_status = #status_quote;
+                        match __maya_ret_status.error() {
+                            false => Ok(()),
+                            true => Err(__maya_ret_status),
+                        }
+                    },
+                    (1, None) => {
                         let &(ref only_ret, _) = outputs.first().unwrap();
                         quote! { #only_ret }
                     },
-                    _ => {
+                    (1, Some(status_quote)) => {
+                        let &(ref only_ret, _) = outputs.first().unwrap();
+                        quote! {
+                            let __maya_ret_status = #status_quote;
+                            match __maya_ret_status.error() {
+                                false => Ok(#only_ret),
+                                true => Err(__maya_ret_status),
+                            }
+                        }
+                    },
+                    (_, None) => {
                         let rets = outputs.iter().map(|&(ref ret, _)| ret);
                         quote! { (#( #rets ),*) }
-                    }
+                    },
+                    (_, Some(status_quote)) => {
+                        let rets = outputs.iter().map(|&(ref ret, _)| ret);
+                        quote! {
+                            let __maya_ret_status = #status_quote;
+                            match __maya_ret_status.error() {
+                                false => Ok((#( #rets ),*)),
+                                true => Err(__maya_ret_status),
+                            }
+                        }
+                    },
                 };
 
                 self.impl_fns.push(quote! {
