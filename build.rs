@@ -686,12 +686,17 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 let fn_ident = &i.sig.ident;
                 let fn_inputs = &i.sig.decl.inputs;
                 if fn_inputs.len() == 0 {
-                    // Implement Default trait.
+                    // Implement Default trait as well as new() constructor.
                     self.impl_traits.push(quote! {
                         impl Default for #impl_type {
                             fn default() -> Self {
-                                Self::from_native(unsafe { #( #ns :: )* #impl_type :: #fn_ident() })
+                                Self::new()
                             }
+                        }
+                    });
+                    self.impl_fns.push(quote! {
+                        pub fn new() -> Self {
+                            Self::from_native(unsafe { #( #ns :: )* #impl_type :: #fn_ident() })
                         }
                     });
                 }
