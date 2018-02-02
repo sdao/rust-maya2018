@@ -138,7 +138,7 @@ impl MayaVisitSecondPass {
         match fn_arg {
             &syn::FnArg::Captured(ref fn_arg) => {
                 match MayaVisitSecondPass::quote_ty(&fn_arg.ty) {
-                    Some((ty_ident, is_ptr)) => ident == &ty_ident && match is_ptr {
+                    Some((ty_ident, _, is_ptr)) => ident == &ty_ident && match is_ptr {
                         MayaVisitPtrType::NotPtr => false,
                         _ => true
                     },
@@ -168,36 +168,57 @@ impl MayaVisitSecondPass {
         return true;
     }
     /// Convert type from bindgen to high-level API.
-    /// Returns: Option((ident, is_ptr)) where ident is the new type token; is_ptr is
-    /// whether the type is a *const/mut ident.
-    fn quote_ty(ty: &syn::Type) -> Option<(syn::Ident, MayaVisitPtrType)> {
+    /// Returns: Option((ident, arr_size, is_ptr)) where ident is the new type token; arr_size
+    /// is the array size or 0 if not a statically-sized array; is_ptr is whether the type is a
+    /// *const/mut ident.
+    fn quote_ty(ty: &syn::Type) -> Option<(syn::Ident, Option<usize>, MayaVisitPtrType)> {
         match ty {
             &syn::Type::Path(ref ty) => {
                 let name = ty.path.segments.last().unwrap().value().ident;
                 match name.to_string().as_str() {
                     "c_char" => None, // XXX need to handle chars
-                    "c_double" => Some((syn::Ident::from("f64"), MayaVisitPtrType::NotPtr)),
-                    "c_float" => Some((syn::Ident::from("f32"), MayaVisitPtrType::NotPtr)),
-                    "c_int" => Some((syn::Ident::from("i32"), MayaVisitPtrType::NotPtr)),
-                    "c_long" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
-                    "c_longlong" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
+                    "c_double" => Some((syn::Ident::from("f64"), None, MayaVisitPtrType::NotPtr)),
+                    "c_float" => Some((syn::Ident::from("f32"), None, MayaVisitPtrType::NotPtr)),
+                    "c_int" => Some((syn::Ident::from("i32"), None, MayaVisitPtrType::NotPtr)),
+                    "c_long" => Some((syn::Ident::from("i64"), None, MayaVisitPtrType::NotPtr)),
+                    "c_longlong" => Some((syn::Ident::from("i64"), None, MayaVisitPtrType::NotPtr)),
                     "c_schar" => None, // XXX need to handle chars
-                    "c_short" => Some((syn::Ident::from("i16"), MayaVisitPtrType::NotPtr)),
-                    "c_uchar" => Some((syn::Ident::from("u8"), MayaVisitPtrType::NotPtr)),
-                    "c_uint" => Some((syn::Ident::from("u32"), MayaVisitPtrType::NotPtr)),
-                    "c_ulong" => Some((syn::Ident::from("u64"), MayaVisitPtrType::NotPtr)),
-                    "c_ulonglong" => Some((syn::Ident::from("u64"), MayaVisitPtrType::NotPtr)),
-                    "c_ushort" => Some((syn::Ident::from("u16"), MayaVisitPtrType::NotPtr)),
+                    "c_short" => Some((syn::Ident::from("i16"), None, MayaVisitPtrType::NotPtr)),
+                    "c_uchar" => Some((syn::Ident::from("u8"), None, MayaVisitPtrType::NotPtr)),
+                    "c_uint" => Some((syn::Ident::from("u32"), None, MayaVisitPtrType::NotPtr)),
+                    "c_ulong" => Some((syn::Ident::from("u64"), None, MayaVisitPtrType::NotPtr)),
+                    "c_ulonglong" =>
+                            Some((syn::Ident::from("u64"), None, MayaVisitPtrType::NotPtr)),
+                    "c_ushort" => Some((syn::Ident::from("u16"), None, MayaVisitPtrType::NotPtr)),
                     "c_void" => None, // XXX maybe handle in unsafe fn
-                    "MInt64" => Some((syn::Ident::from("i64"), MayaVisitPtrType::NotPtr)),
-                    "MString" => Some((syn::Ident::from("String"), MayaVisitPtrType::NotPtr)),
-                    _ => Some((name, MayaVisitPtrType::NotPtr)),
+                    "MInt64" => Some((syn::Ident::from("i64"), None, MayaVisitPtrType::NotPtr)),
+                    "MString" => Some((syn::Ident::from("String"), None, MayaVisitPtrType::NotPtr)),
+                    _ => Some((name, None, MayaVisitPtrType::NotPtr)),
+                }
+            },
+            &syn::Type::Array(ref ty) => {
+                let inner_ty = MayaVisitSecondPass::quote_ty(&ty.elem);
+                match inner_ty {
+                    Some((ident, _, _)) => {
+                        let arr_size = if let syn::Expr::Lit(ref lit) = ty.len {
+                            if let syn::Lit::Int(ref i) = lit.lit {
+                                Some(i.value() as usize)
+                            } else {
+                                None
+                            }
+                        }
+                        else {
+                            None
+                        };
+                        Some((ident, arr_size, MayaVisitPtrType::NotPtr))
+                    },
+                    _ => None
                 }
             },
             &syn::Type::Ptr(ref ty) => {
                 let inner_ty = MayaVisitSecondPass::quote_ty(&ty.elem);
                 match inner_ty {
-                    Some((tokens, _)) => {
+                    Some((ident, arr_size, _)) => {
                         let is_const = ty.const_token.is_some();
                         let ptr_kind = if is_const {
                             MayaVisitPtrType::ConstPtr
@@ -205,12 +226,18 @@ impl MayaVisitSecondPass {
                         else {
                             MayaVisitPtrType::MutPtr
                         };
-                        Some((tokens, ptr_kind))
+                        Some((ident, arr_size, ptr_kind))
                     },
                     _ => None
                 }
             },
             _ => None
+        }
+    }
+    fn quote_arr(ty: &syn::Ident, arr_size: Option<usize>) -> quote::Tokens {
+        match arr_size {
+            Some(arr_size) => quote! { [#ty ; #arr_size] },
+            _ => quote! { #ty }
         }
     }
     /// Substitutes the Rust identifier for one better-suited in an input argument context.
@@ -232,12 +259,12 @@ impl MayaVisitSecondPass {
         let fn_ident = &i.sig.ident;
         let fn_inputs = &i.sig.decl.inputs;
         if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
-            if let Some((rhs_ident, rhs_is_ptr)) =
+            if let Some((rhs_ident, None, rhs_is_ptr)) =
                 MayaVisitSecondPass::quote_ty(&fn_arg.ty)
             {
                 let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
                 if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
-                    if let Some((ret_ident, _)) =
+                    if let Some((ret_ident, None, _)) =
                         MayaVisitSecondPass::quote_ty(&ret_ty)
                     {
                         let invoke_byval = match rhs_is_ptr {
@@ -329,12 +356,12 @@ impl MayaVisitSecondPass {
         let fn_ident = &i.sig.ident;
         let fn_inputs = &i.sig.decl.inputs;
         if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
-            if let Some((rhs_ident, rhs_is_ptr)) =
+            if let Some((rhs_ident, None, rhs_is_ptr)) =
                 MayaVisitSecondPass::quote_ty(&fn_arg.ty)
             {
                 let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
                 if let &syn::ReturnType::Type(_, ref ret_ty) = &i.sig.decl.output {
-                    if let Some((ret_ident, ret_is_ptr)) =
+                    if let Some((ret_ident, None, ret_is_ptr)) =
                         MayaVisitSecondPass::quote_ty(&ret_ty)
                     {
                         let invoke_byval = match rhs_is_ptr {
@@ -736,7 +763,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 // == and != are special because they belong to PartialEq.
                 if fn_ident.to_string().starts_with("operator_eq") {
                     if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
-                        if let Some((rhs_ident, rhs_is_ptr)) =
+                        if let Some((rhs_ident, None, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
                             let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
@@ -757,7 +784,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 }
                 if fn_ident.to_string().starts_with("operator_neq") {
                     if let &syn::FnArg::Captured(ref fn_arg) = *fn_inputs.last().unwrap().value() {
-                        if let Some((rhs_ident, rhs_is_ptr)) =
+                        if let Some((rhs_ident, None, rhs_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&fn_arg.ty)
                         {
                             let rhs_ident = MayaVisitSecondPass::inputize(&rhs_ident, &rhs_is_ptr);
@@ -831,7 +858,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 let fn_inputs = &i.sig.decl.inputs;
                 let (ret_ident, ret_is_ptr) = match &i.sig.decl.output {
                     &syn::ReturnType::Type(_, ref ret_ty) => {
-                        if let Some((ret_ident, ret_is_ptr)) =
+                        if let Some((ret_ident, None, ret_is_ptr)) =
                             MayaVisitSecondPass::quote_ty(&ret_ty)
                         {
                             if !self.is_implemented(&ret_ident) {
@@ -870,14 +897,28 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         },
                         &syn::FnArg::Captured(ref arg) => {
                             match MayaVisitSecondPass::quote_ty(&arg.ty) {
-                                Some((ty_ident, ty_is_ptr)) => {
+                                Some((ty_ident, arr_size, ty_is_ptr)) => {
                                     let name = &arg.pat;
+
+                                    if let Some(arr_size) = arr_size {
+                                        if arr_size == 0 {
+                                            // Can't handle this right now.
+                                            eprintln!("{}::{} -- skipping because arg type \
+                                                    `{}: {}` is 0-sized array",
+                                                    impl_type, fn_name,
+                                                    name.into_tokens(), ty_ident);
+                                            return;
+                                        }
+                                    }
+
                                     if !self.is_implemented(&ty_ident) {
+                                        // Can't handle this right now.
                                         eprintln!("{}::{} -- skipping because arg type \
                                                 `{}: {}` not implemented in bindings",
                                                 impl_type, fn_name, name.into_tokens(), ty_ident);
                                         return;
                                     }
+
                                     match ty_is_ptr {
                                         MayaVisitPtrType::MutPtr => {
                                             if ty_ident == syn::Ident::from("MDataBlock") ||
@@ -889,7 +930,9 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                                 let unwrapped = self.unwrap(
                                                         &quote! { #name }, &ty_ident,
                                                         MayaVisitPtrType::MutPtr);
-                                                inputs.push(quote! { #name: &mut #ty_ident });
+                                                let ty_arr = MayaVisitSecondPass::quote_arr(
+                                                        &ty_ident, arr_size);
+                                                inputs.push(quote! { #name : &mut #ty_arr });
                                                 invoke_args.push(unwrapped);
                                             }
                                             else {
@@ -901,10 +944,13 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                                 let unwrapped = self.unwrap(
                                                         &quote! { &mut #name }, &ty_ident,
                                                         MayaVisitPtrType::MutPtr);
+                                                let ty_arr = MayaVisitSecondPass::quote_arr(
+                                                        &ty_ident, arr_size);
                                                 preface_transforms.push(quote! {
-                                                    let mut #name = #ty_ident::default();
+                                                    let mut #name: #ty_arr = Default::default();
                                                 });
-                                                outputs.push((quote! { #name }, ty_ident));
+                                                outputs.push(
+                                                        (quote! { #name }, ty_ident, arr_size));
                                                 invoke_args.push(unwrapped);
                                             }
                                         },
@@ -914,7 +960,9 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                             let unwrapped = self.unwrap(
                                                     &quote! { #name }, &ty_ident,
                                                     MayaVisitPtrType::ConstPtr);
-                                            inputs.push(quote! { #name: &#ty_ident });
+                                            let ty_arr = MayaVisitSecondPass::quote_arr(
+                                                    &ty_ident, arr_size);
+                                            inputs.push(quote! { #name : &#ty_arr });
                                             invoke_args.push(unwrapped);
                                         },
                                         MayaVisitPtrType::NotPtr => {
@@ -947,7 +995,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         MayaVisitPtrType::NotPtr => {
                             // Need to wrap because the function returned a native arg by value.
                             let ret_wrapped = self.wrap(&quote! { __maya_ret }, &ret_ident);
-                            outputs.push((ret_wrapped, ret_ident));
+                            outputs.push((ret_wrapped, ret_ident, None));
                         },
                         _ => {
                             // Manually wrap by constructing the wrapper ahead-of-time, assigning
@@ -969,7 +1017,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                     let __maya_ret_val = unsafe { *__maya_ret };
                                 })
                             }
-                            outputs.push((quote! { __maya_ret_val }, ret_ident));
+                            outputs.push((quote! { __maya_ret_val }, ret_ident, None));
                         }
                     }
                 }
@@ -978,9 +1026,9 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                 // If so, loft it into the Result type.
                 let mut status = None;
                 for i in 0..outputs.len() {
-                    let (_, ret_ident) = outputs[i];
+                    let (_, ret_ident, _) = outputs[i];
                     if ret_ident == syn::Ident::from("MStatus") {
-                        let (status_quote, _) = outputs.remove(i);
+                        let (status_quote, _, _) = outputs.remove(i);
                         status = Some(status_quote);
                         break;
                     }
@@ -989,20 +1037,24 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                     (0, &None) => quote! {},
                     (0, &Some(..)) => quote! { -> Result<(), MStatus> },
                     (1, &None) => {
-                        let &(_, only_ty) = outputs.first().unwrap();
-                        quote! { -> #only_ty }
+                        let &(_, only_ty, arr_size) = outputs.first().unwrap();
+                        let only_out = MayaVisitSecondPass::quote_arr(&only_ty, arr_size);
+                        quote! { -> #only_out }
                     },
                     (1, &Some(..)) => {
-                        let &(_, only_ty) = outputs.first().unwrap();
-                        quote! { -> Result<#only_ty, MStatus> }
+                        let &(_, only_ty, arr_size) = outputs.first().unwrap();
+                        let only_out = MayaVisitSecondPass::quote_arr(&only_ty, arr_size);
+                        quote! { -> Result<#only_out, MStatus> }
                     },
                     (_, &None) => {
-                        let tys = outputs.iter().map(|&(_, ty)| ty);
-                        quote! { -> (#( #tys ),*) }
+                        let outs = outputs.iter().map(
+                                |&(_, ty, asz)| MayaVisitSecondPass::quote_arr(&ty, asz));
+                        quote! { -> (#( #outs ),*) }
                     },
                     (_, &Some(..)) => {
-                        let tys = outputs.iter().map(|&(_, ty)| ty);
-                        quote! { -> Result<(#( #tys ),*), MStatus> }
+                        let outs = outputs.iter().map(
+                                |&(_, ty, asz)| MayaVisitSecondPass::quote_arr(&ty, asz));
+                        quote! { -> Result<(#( #outs ),*), MStatus> }
                     },
                 };
                 let ret_statement = match (outputs.len(), status) {
@@ -1015,11 +1067,11 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         }
                     },
                     (1, None) => {
-                        let &(ref only_ret, _) = outputs.first().unwrap();
+                        let &(ref only_ret, _, _) = outputs.first().unwrap();
                         quote! { #only_ret }
                     },
                     (1, Some(status_quote)) => {
-                        let &(ref only_ret, _) = outputs.first().unwrap();
+                        let &(ref only_ret, _, _) = outputs.first().unwrap();
                         quote! {
                             let __maya_ret_status = #status_quote;
                             match __maya_ret_status.error() {
@@ -1029,11 +1081,11 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                         }
                     },
                     (_, None) => {
-                        let rets = outputs.iter().map(|&(ref ret, _)| ret);
+                        let rets = outputs.iter().map(|&(ref ret, _, _)| ret);
                         quote! { (#( #rets ),*) }
                     },
                     (_, Some(status_quote)) => {
-                        let rets = outputs.iter().map(|&(ref ret, _)| ret);
+                        let rets = outputs.iter().map(|&(ref ret, _, _)| ret);
                         quote! {
                             let __maya_ret_status = #status_quote;
                             match __maya_ret_status.error() {
