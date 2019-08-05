@@ -176,7 +176,7 @@ impl MayaVisitSecondPass {
             &syn::Type::Path(ref ty) => {
                 let name = ty.path.segments.last().unwrap().value().ident;
                 match name.to_string().as_str() {
-                    "c_char" => None, // XXX need to handle chars
+                    "c_char" => Some((syn::Ident::from("String"), None, MayaVisitPtrType::NotPtr)),
                     "c_double" => Some((syn::Ident::from("f64"), None, MayaVisitPtrType::NotPtr)),
                     "c_float" => Some((syn::Ident::from("f32"), None, MayaVisitPtrType::NotPtr)),
                     "c_int" => Some((syn::Ident::from("i32"), None, MayaVisitPtrType::NotPtr)),
@@ -529,7 +529,7 @@ impl MayaVisitSecondPass {
                                 let ret_ident = MayaVisitSecondPass::inputize(
                                         &ret_ident, &ret_is_ptr);
                                 let unwrap_value = self.unwrap(&quote! { value }, &ret_ident,
-                                        MayaVisitPtrType::ConstPtr);
+                                        &ret_ty, MayaVisitPtrType::ConstPtr);
                                 let assignment = if ret_ident == syn::Ident::from("str") {
                                     quote! { (*ptr).operator_assign(#unwrap_value); }
                                 }
@@ -572,11 +572,11 @@ impl MayaVisitSecondPass {
     fn wrap(&self, native_expr: &quote::Tokens, rust_ty: &syn::Ident) -> quote::Tokens {
         if *rust_ty == syn::Ident::from("String") {
             // Special, we auto-convert the MString into a Rust String.
-            quote! { String::from(&#native_expr) }
+            quote! { String::unsafe_from(&#native_expr) }
         }
         else if *rust_ty == syn::Ident::from("str") {
             // Special, we auto-convert the MString into a Rust &str.
-            quote! { String::from(&#native_expr).as_str() }
+            quote! { String::unsafe_from(&#native_expr).as_str() }
         }
         else if self.first_pass.structs.contains(&rust_ty) {
             quote! { #rust_ty::from_native(#native_expr) }
@@ -585,27 +585,57 @@ impl MayaVisitSecondPass {
             quote! { #native_expr }
         }
     }
-    fn unwrap(&self, rust_expr: &quote::Tokens, rust_ty: &syn::Ident, is_ptr: MayaVisitPtrType)
-        -> quote::Tokens
+    fn unwrap(&self, rust_expr: &quote::Tokens, rust_ty: &syn::Ident, native_ty: &syn::Type,
+        is_ptr: MayaVisitPtrType) -> quote::Tokens
     {
         let ref_token = match is_ptr {
             MayaVisitPtrType::NotPtr => quote! {},
             MayaVisitPtrType::ConstPtr => quote! { & },
             MayaVisitPtrType::MutPtr => quote! { &mut },
         };
+        let is_char = match native_ty {
+            &syn::Type::Ptr(ref ty) => {
+                match &*ty.elem {
+                    &syn::Type::Path(ref ty) => {
+                        let name = ty.path.segments.last().unwrap().value().ident;
+                        match name.to_string().as_str() {
+                            "c_char" => true,
+                            _ => false
+                        }
+                    },
+                    _ => false
+                }
+            },
+            _ => false
+        };
         if *rust_ty == syn::Ident::from("String") {
-            // Special, we auto-convert from Rust String back into MString.
-            quote! {
-                #ref_token
-                root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(
-                        (#rust_expr).as_str())
+            // Special, we auto-convert from Rust String back into MString/*char.
+            if is_char {
+                quote! {
+                    unimplemented!()
+                }
+            }
+            else {
+                quote! {
+                    #ref_token
+                    root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::unsafe_from(
+                            (#rust_expr).as_str())
+                }
             }
         }
         else if *rust_ty == syn::Ident::from("str") {
-            // Special, we auto-convert from Rust &str back into MString.
-            quote! {
-                #ref_token
-                root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(#rust_expr)
+            // Special, we auto-convert from Rust &str back into MString/*char.
+            if is_char {
+                quote! {
+                    unimplemented!()
+                }
+            }
+            else {
+                quote! {
+                    #ref_token
+                    root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::unsafe_from(
+                            #rust_expr)
+                }
             }
         }
         else if self.first_pass.structs.contains(&rust_ty) {
@@ -928,7 +958,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                                 let ty_ident = MayaVisitSecondPass::inputize(
                                                         &ty_ident, &MayaVisitPtrType::MutPtr);
                                                 let unwrapped = self.unwrap(
-                                                        &quote! { #name }, &ty_ident,
+                                                        &quote! { #name }, &ty_ident, &arg.ty,
                                                         MayaVisitPtrType::MutPtr);
                                                 let ty_arr = MayaVisitSecondPass::quote_arr(
                                                         &ty_ident, arr_size);
@@ -942,7 +972,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                                 // &mut #name.
                                                 // Warning: DO NOT inputize in this case!
                                                 let unwrapped = self.unwrap(
-                                                        &quote! { &mut #name }, &ty_ident,
+                                                        &quote! { &mut #name }, &ty_ident, &arg.ty,
                                                         MayaVisitPtrType::MutPtr);
                                                 let ty_arr = MayaVisitSecondPass::quote_arr(
                                                         &ty_ident, arr_size);
@@ -958,7 +988,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                             let ty_ident = MayaVisitSecondPass::inputize(
                                                     &ty_ident, &MayaVisitPtrType::ConstPtr);
                                             let unwrapped = self.unwrap(
-                                                    &quote! { #name }, &ty_ident,
+                                                    &quote! { #name }, &ty_ident, &arg.ty,
                                                     MayaVisitPtrType::ConstPtr);
                                             let ty_arr = MayaVisitSecondPass::quote_arr(
                                                     &ty_ident, arr_size);
@@ -969,7 +999,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                                             let ty_ident = MayaVisitSecondPass::inputize(
                                                     &ty_ident, &MayaVisitPtrType::NotPtr);
                                             let unwrapped = self.unwrap(
-                                                    &quote! { #name }, &ty_ident,
+                                                    &quote! { #name }, &ty_ident, &arg.ty,
                                                     MayaVisitPtrType::NotPtr);
                                             inputs.push(quote! { #name: #ty_ident });
                                             invoke_args.push(unwrapped);
@@ -1003,7 +1033,7 @@ impl<'ast> syn::visit::Visit<'ast> for MayaVisitSecondPass {
                             // (Strings and primitives can be copied after-the-fact.)
                             if ret_ident == syn::Ident::from("String") {
                                 postscript_transforms.push(quote! {
-                                    let __maya_ret_val = String::from(unsafe { &*__maya_ret });
+                                    let __maya_ret_val = String::unsafe_from(unsafe { __maya_ret });
                                 });
                             }
                             else if self.is_struct(&ret_ident) {

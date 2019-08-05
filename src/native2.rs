@@ -2,6 +2,10 @@
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
+unsafe trait UnsafeFrom<FromType> {
+    fn unsafe_from(original: FromType) -> Self where Self: Sized;
+}
 impl<'a> From<&'a root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString> for String {
     fn from(mstring: &root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString) -> String {
         unsafe {
@@ -16,6 +20,56 @@ impl<'a> From<&'a str> for root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION
         let cstring = CString::new(string).unwrap();
         unsafe {
             root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::new1(cstring.as_ptr())
+        }
+    }
+}
+unsafe impl<'a> UnsafeFrom<&'a root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString>
+    for String
+{
+    fn unsafe_from(string: &'a root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString)
+        -> String
+    {
+        String::from(string)
+    }
+}
+unsafe impl UnsafeFrom<*const root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString>
+    for String
+{
+    fn unsafe_from(string: *const root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString)
+        -> String
+    {
+        String::from(&*string)
+    }
+}
+unsafe impl UnsafeFrom<*mut root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString>
+    for String
+{
+    fn unsafe_from(string: *mut root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString)
+        -> String
+    {
+        String::from(&*string)
+    }
+}
+unsafe impl<'a> UnsafeFrom<&'a str>
+    for root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString
+{
+    fn unsafe_from(string: &str) -> root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString {
+        root::AUTODESK_NAMESPACE::MAYA_NAMESPACE::API_VERSION::MString::from(string)
+    }
+}
+unsafe impl UnsafeFrom<*const c_char> for String {
+    fn unsafe_from(string: *const c_char)  -> String {
+        unsafe {
+            let s = CStr::from_ptr(string).to_str().expect("invalid const char* from OpenMaya");
+            String::from(s)
+        }
+    }
+}
+unsafe impl UnsafeFrom<*mut c_char> for String {
+    fn unsafe_from(string: *mut c_char)  -> String {
+        unsafe {
+            let s = CStr::from_ptr(string).to_str().expect("invalid const char* from OpenMaya");
+            String::from(s)
         }
     }
 }
